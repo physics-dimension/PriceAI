@@ -433,6 +433,34 @@ const familyBalancedLatency = getStationPublishedAvailabilitySummary(familyBalan
 assertEqual(familyBalancedLatency.latestLatencyMs, 5000);
 assertEqual(familyBalancedLatency.avgLatency7dMs, 5000);
 
+const exactStationLatencyOverridesStaleFamilyLatency = station({
+  id: "exact-station-latency-overrides-stale-family-latency",
+  name: "Exact Station Latency Overrides Stale Family Latency",
+  claudeRate: 0.2,
+  availabilityRate: 0.99,
+  availabilitySamples: 172,
+});
+exactStationLatencyOverridesStaleFamilyLatency.availability.scope = "station";
+exactStationLatencyOverridesStaleFamilyLatency.availability.matchLevel = "exact";
+exactStationLatencyOverridesStaleFamilyLatency.availability.latestLatencyMs = 2159;
+exactStationLatencyOverridesStaleFamilyLatency.availability.avgLatency7dMs = 1701;
+exactStationLatencyOverridesStaleFamilyLatency.prices.push({
+  ...exactStationLatencyOverridesStaleFamilyLatency.prices[0]!,
+  family: "gemini",
+  standardModel: "Gemini 3.5 Flash",
+  groupName: "gemini",
+  availability: {
+    ...exactStationLatencyOverridesStaleFamilyLatency.prices[0]!.availability,
+    latestLatencyMs: 22_859,
+    avgLatency7dMs: 22_859,
+  },
+});
+const exactStationLatencySummary = getStationPublishedAvailabilitySummary(
+  exactStationLatencyOverridesStaleFamilyLatency,
+);
+assertEqual(exactStationLatencySummary.latestLatencyMs, 2159);
+assertEqual(exactStationLatencySummary.avgLatency7dMs, 1701);
+
 const textOnlyOverallStation = station({
   id: "text-only-overall-station",
   name: "Text Only Overall Station",

@@ -1425,6 +1425,9 @@ export function getStationPublishedAvailabilitySummary(
   const latencyFamilies = familySummaries ?? TRANSIT_MODEL_FAMILY_ORDER.map((family) =>
     getFamilyRateSummary(station, family)
   );
+  const directStationLatency = hasDirectStationAvailabilityEvidence(station.availability)
+    ? station.availability
+    : null;
 
   return {
     sevenDayRate: roundAvailabilityRate(weightedRate),
@@ -1432,8 +1435,12 @@ export function getStationPublishedAvailabilitySummary(
     firstCheckedAt,
     lastCheckedAt,
     recentSamples: stationRecentSamples || summaryRecentSamples,
-    latestLatencyMs: averageFamilyLatency(latencyFamilies, "latestLatencyMs"),
-    avgLatency7dMs: averageFamilyLatency(latencyFamilies, "avgLatency7dMs"),
+    latestLatencyMs:
+      validTransitLatency(directStationLatency?.latestLatencyMs) ??
+      averageFamilyLatency(latencyFamilies, "latestLatencyMs"),
+    avgLatency7dMs:
+      validTransitLatency(directStationLatency?.avgLatency7dMs) ??
+      averageFamilyLatency(latencyFamilies, "avgLatency7dMs"),
     note: `按当前公开模型分组汇总：${formatPercent(roundAvailabilityRate(weightedRate))} · 样本 ${samples}`,
     sourceType: source.sourceType,
     sourceLabel: source.sourceLabel,
@@ -1442,6 +1449,12 @@ export function getStationPublishedAvailabilitySummary(
       isTransitAvailabilityReferenceForRankingScope(price.availability, "station")
     ),
   };
+}
+
+function validTransitLatency(value: number | null | undefined): number | null {
+  return value !== null && value !== undefined && Number.isFinite(value) && value > 0
+    ? value
+    : null;
 }
 
 function hasDirectStationAvailabilityEvidence(availability: TransitAvailability): boolean {

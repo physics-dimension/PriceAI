@@ -42,7 +42,7 @@ import {
   getAvailabilitySourceMeta,
   getCacheHitRateBadgeClass,
   getRateBadgeClass,
-  getTransitModelSummaries,
+  hydrateTransitModelIndexSummaries,
   getTransitModelDetectionBadgeClass,
   getTransitPriceAvailabilitySourceMeta,
   getTransitPriceDetectionSummary,
@@ -51,6 +51,7 @@ import {
   hasPublicTransitModelDetectionReport,
   isTransitFixedPrice,
   type TransitModelPriceEntry,
+  type TransitModelIndex,
   type TransitModelSummary,
 } from "@/lib/api-transit";
 import {
@@ -67,10 +68,10 @@ function coerceFamily(value: string | null): FamilyFilter {
 }
 
 interface Props {
-  stations: TransitStation[];
+  modelIndex: TransitModelIndex;
 }
 
-export default function TransitModelExplorer({ stations }: Props) {
+export default function TransitModelExplorer({ modelIndex }: Props) {
   useListScrollRestoration();
   const routeSearchParams = useSearchParams();
   const searchParams = useClientSearchParams(routeSearchParams.toString());
@@ -92,17 +93,20 @@ export default function TransitModelExplorer({ stations }: Props) {
     });
   }, [debouncedQuery, urlReady]);
 
+  const hydratedModelSummaries = useMemo(
+    () => hydrateTransitModelIndexSummaries(modelIndex, family),
+    [family, modelIndex],
+  );
   const modelSummaries = useMemo(() => {
-    const summaries = getTransitModelSummaries(stations, family);
-    if (!query) return summaries;
+    if (!query) return hydratedModelSummaries;
 
     const q = query.trim().toLowerCase();
-    return summaries.filter(
+    return hydratedModelSummaries.filter(
       (summary) =>
         summary.standardModel.toLowerCase().includes(q) ||
         summary.familyLabel.toLowerCase().includes(q)
     );
-  }, [family, query, stations]);
+  }, [hydratedModelSummaries, query]);
 
   return (
     <div>
@@ -125,10 +129,10 @@ export default function TransitModelExplorer({ stations }: Props) {
       {modelSummaries.length === 0 ? (
         <div className="rounded-lg bg-white px-6 py-16 text-center text-[#5a6061] ring-1 ring-[#adb3b4]/15">
           <p className="mb-2 text-lg font-semibold text-[#202829]">
-            {stations.length === 0 ? "暂无已发布的真实模型数据" : "没有匹配的模型"}
+            {modelIndex.stations.length === 0 ? "暂无已发布的真实模型数据" : "没有匹配的模型"}
           </p>
           <p className="mx-auto max-w-[560px] text-sm leading-6">
-            {stations.length === 0
+            {modelIndex.stations.length === 0
               ? "后台候选数据完成清洗、审核和发布后，模型页才会展示可对比的真实报价。"
               : "尝试调整模型族或搜索关键词。"}
           </p>

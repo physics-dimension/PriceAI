@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import { getTransitStations } from "@/lib/api-transit-db";
-import { compactTransitStationsForList, formatRate, getTransitModelFamilyOptions, getTransitModelSummaries } from "@/lib/api-transit";
+import { getTransitStations, readTransitModelIndexSnapshot } from "@/lib/api-transit-db";
+import { buildTransitModelIndex, compactTransitStationsForList, formatRate, getTransitModelFamilyOptions } from "@/lib/api-transit";
 import TransitModelExplorer from "@/components/TransitModelExplorer";
 import { JsonLd } from "@/components/JsonLd";
 import { ApiTransitPageShell } from "@/components/ApiTransitPageShell";
@@ -22,18 +22,14 @@ export const metadata: Metadata = {
 export const revalidate = 300;
 
 export default async function ApiTransitModelsPage() {
-  const [stations, sponsorSettings] = await Promise.all([
-    getTransitStations(),
-    getSponsorSettingsSummary().catch(() => null),
-  ]);
+  const { modelIndex, sponsorSettings } = await loadTransitModelsPageData();
   const familyOptions = getTransitModelFamilyOptions();
-  const listStations = compactTransitStationsForList(stations);
-  const modelSummaries = getTransitModelSummaries(listStations, "all");
-  const bestRate =
-    modelSummaries
-      .map((summary) => summary.bestCombinedRate)
-      .filter((rate): rate is number => rate !== null)
-      .sort((a, b) => a - b)[0] ?? null;
+  const modelSummaries = modelIndex.summaries;
+  const bestRate = modelSummaries.reduce<number | null>((best, summary) => {
+    const rate = summary.bestCombinedRate;
+    if (rate === null) return best;
+    return best === null || rate < best ? rate : best;
+  }, null);
   const sampleCount = modelSummaries.reduce((total, summary) => total + summary.sampleCount, 0);
 
   return (
@@ -64,8 +60,70 @@ export default async function ApiTransitModelsPage() {
         description="按标准模型横向对比各中转站的充值系数、模型倍率、综合倍率和近 7 日稳定性。站点榜仍是主入口，模型页用于快速查某个模型在哪些站点更便宜。"
         sponsorSettings={sponsorSettings}
       >
-        <TransitModelExplorer stations={listStations} />
+        <TransitModelExplorer modelIndex={modelIndex} />
       </ApiTransitPageShell>
     </>
   );
+}
+
+async function loadTransitModelsPageData() {
+  const startedAt = performance.now();
+  let indexSnapshotMs = 0;
+  let stationsMs = 0;
+  let indexBuildMs = 0;
+  let sponsorMs = 0;
+
+  const sponsorPromise = measureAsync(
+    () => getSponsorSettingsSummary().catch(() => null),
+    (elapsed) => { sponsorMs = elapsed; },
+  );
+  const snapshot = await measureAsync(
+    readTransitModelIndexSnapshot,
+    (elapsed) => { indexSnapshotMs = elapsed; },
+  );
+
+  let source: "snapshot" | "stale_snapshot" | "fallback" = snapshot?.fresh
+    ? "snapshot"
+    : snapshot
+      ? "stale_snapshot"
+      : "fallback";
+  let modelIndex = snapshot?.index ?? null;
+  if (!modelIndex) {
+    source = "fallback";
+    const stations = await measureAsync(
+      getTransitStations,
+      (elapsed) => { stationsMs = elapsed; },
+    );
+    const indexBuildStartedAt = performance.now();
+    modelIndex = buildTransitModelIndex(compactTransitStationsForList(stations));
+    indexBuildMs = performance.now() - indexBuildStartedAt;
+  }
+
+  const sponsorSettings = await sponsorPromise;
+
+  if (process.env.NEXT_PHASE !== "phase-production-build") {
+    console.info("api_transit_models_render", {
+      source,
+      indexSnapshotMs: Math.round(indexSnapshotMs),
+      stationsMs: Math.round(stationsMs),
+      indexBuildMs: Math.round(indexBuildMs),
+      sponsorMs: Math.round(sponsorMs),
+      dataReadyMs: Math.round(performance.now() - startedAt),
+      stationCount: modelIndex.stations.length,
+      modelCount: modelIndex.summaries.length,
+      priceReferenceCount: modelIndex.priceEntries.length,
+      snapshotGeneratedAt: modelIndex.generatedAt,
+    });
+  }
+
+  return { modelIndex, sponsorSettings };
+}
+
+async function measureAsync<T>(task: () => Promise<T>, record: (elapsedMs: number) => void): Promise<T> {
+  const startedAt = performance.now();
+  try {
+    return await task();
+  } finally {
+    record(performance.now() - startedAt);
+  }
 }

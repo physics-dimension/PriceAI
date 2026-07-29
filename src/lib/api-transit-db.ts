@@ -17,7 +17,11 @@ import {
 } from "@/data/api-transit/types";
 import { seedStations } from "@/data/api-transit/stations";
 import {
+  buildTransitModelIndex,
+  compactTransitStationsForList,
   getTransitRecentAvailabilitySampleLookupScopes,
+  isTransitModelIndex,
+  type TransitModelIndex,
   withTransitCommercialOfferDisclosure,
 } from "@/lib/api-transit";
 import { readPublicApiSnapshot, writePublicApiSnapshot } from "@/lib/public-api-snapshots";
@@ -34,6 +38,7 @@ const PUBLIC_TRANSIT_READ_TIMEOUT_MS = 2_500;
 const PUBLIC_TRANSIT_REFRESH_READ_TIMEOUT_MS = 15_000;
 const PUBLIC_TRANSIT_BUILD_READ_TIMEOUT_MS = 15_000;
 const API_TRANSIT_SNAPSHOT_KEY = "default";
+const API_TRANSIT_MODEL_INDEX_SNAPSHOT_KEY = "models:v1";
 const API_TRANSIT_SNAPSHOT_MAX_STALE_MS = 10 * 60 * 1000;
 const NEXT_PRODUCTION_BUILD_PHASE = "phase-production-build";
 const TRANSIT_HISTORY_DAYS = 45;
@@ -290,8 +295,10 @@ export function clearTransitStationsCache(): void {
 export type TransitStationsSnapshotRefreshResult = {
   generatedAt: string;
   snapshotWritten: boolean;
+  modelIndexWritten: boolean;
   slugs: string[];
   stationCount: number;
+  modelCount: number;
 };
 
 type TransitStationsReadOptions = {
@@ -303,13 +310,19 @@ export async function refreshTransitStationsSnapshot(): Promise<TransitStationsS
   const stations = await readStationsFromSupabase({ signal: publicTransitRefreshReadSignal() });
 
   setTransitStationsCache(stations, new Date(generatedAt).getTime());
-  const snapshotWritten = await writeTransitStationsSnapshot(stations, generatedAt);
+  const modelIndex = buildTransitModelIndex(compactTransitStationsForList(stations), generatedAt);
+  const [snapshotWritten, modelIndexWritten] = await Promise.all([
+    writeTransitStationsSnapshot(stations, generatedAt),
+    writeTransitModelIndexSnapshot(modelIndex, generatedAt),
+  ]);
 
   return {
     generatedAt,
     snapshotWritten,
+    modelIndexWritten,
     slugs: stations.map((station) => station.slug),
     stationCount: stations.length,
+    modelCount: modelIndex.summaries.length,
   };
 }
 
@@ -385,6 +398,35 @@ async function writeTransitStationsSnapshot(
     kind: "api_transit",
     key: API_TRANSIT_SNAPSHOT_KEY,
     payload: stations,
+    generatedAt,
+  });
+}
+
+export async function readTransitModelIndexSnapshot(): Promise<{
+  index: TransitModelIndex;
+  fresh: boolean;
+} | null> {
+  const snapshot = await readPublicApiSnapshot<TransitModelIndex>(
+    "api_transit",
+    API_TRANSIT_MODEL_INDEX_SNAPSHOT_KEY,
+  );
+  if (!snapshot || !isTransitModelIndex(snapshot.value)) return null;
+
+  const generatedAt = new Date(snapshot.generatedAt).getTime();
+  return {
+    index: snapshot.value,
+    fresh: Number.isFinite(generatedAt) && Date.now() - generatedAt <= API_TRANSIT_SNAPSHOT_MAX_STALE_MS,
+  };
+}
+
+async function writeTransitModelIndexSnapshot(
+  index: TransitModelIndex,
+  generatedAt?: string,
+): Promise<boolean> {
+  return writePublicApiSnapshot({
+    kind: "api_transit",
+    key: API_TRANSIT_MODEL_INDEX_SNAPSHOT_KEY,
+    payload: index,
     generatedAt,
   });
 }

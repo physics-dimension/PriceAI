@@ -1,5 +1,6 @@
 import {
   buildTransitAvailabilityBars,
+  buildTransitModelIndex,
   compareStations,
   compactTransitStationsForList,
   TRANSIT_RANKING_WEIGHTS,
@@ -20,6 +21,8 @@ import {
   getTransitAvailabilityRollupPrices,
   getPreferredTransitAvailabilityRollupPrices,
   getTransitModelSummaries,
+  hydrateTransitModelIndexSummaries,
+  isTransitModelIndex,
   getOfficialTransitModelPrice,
   getNormalizedSourceTags,
   getTransitPriceAvailabilitySourceMeta,
@@ -544,6 +547,48 @@ const imageSummary = getTransitModelSummaries([expensiveImageStation, cheapImage
 assertEqual(imageSummary?.bestCombinedRate, null);
 assertEqual(imageSummary?.bestFixedPrice, 0.016);
 assertEqual(formatTransitFixedPriceValue(imageSummary?.bestFixedPrice ?? null), "¥0.016/次");
+
+const imageModelIndex = buildTransitModelIndex(
+  [expensiveImageStation, cheapImageStation],
+  "2026-07-30T00:00:00.000Z",
+);
+const persistedImageModelIndex: unknown = JSON.parse(JSON.stringify(imageModelIndex));
+assertEqual(isTransitModelIndex(persistedImageModelIndex), true);
+if (!isTransitModelIndex(persistedImageModelIndex)) throw new Error("Expected a valid persisted image model index.");
+assertDeepEqual(
+  hydrateTransitModelIndexSummaries(persistedImageModelIndex, "image"),
+  getTransitModelSummaries([expensiveImageStation, cheapImageStation], "image"),
+);
+const invalidImageModelIndex = structuredClone(persistedImageModelIndex);
+const firstImagePriceEntry = invalidImageModelIndex.priceEntries[0];
+if (!firstImagePriceEntry) throw new Error("Expected an image model price reference.");
+firstImagePriceEntry.stationIndex = invalidImageModelIndex.stations.length;
+assertEqual(isTransitModelIndex(invalidImageModelIndex), false);
+
+const mismatchedImageModelIndex = structuredClone(persistedImageModelIndex);
+const gptImageSummary = mismatchedImageModelIndex.summariesByFamily.image
+  .find((summary) => summary.standardModel === "GPT Image 2");
+if (!gptImageSummary?.priceEntryIndexes.length) throw new Error("Expected a GPT Image 2 summary reference.");
+const grokSummary = mismatchedImageModelIndex.summariesByFamily.image
+  .find((summary) => summary.standardModel === "Grok Image");
+if (!grokSummary) throw new Error("Expected a Grok Image summary.");
+grokSummary.priceEntryIndexes = [gptImageSummary.priceEntryIndexes[0]!];
+assertEqual(isTransitModelIndex(mismatchedImageModelIndex), false);
+
+const crossFamilyImageStation = structuredClone(cheapImageStation);
+crossFamilyImageStation.id = "cross-family-image-station";
+crossFamilyImageStation.slug = crossFamilyImageStation.id;
+crossFamilyImageStation.prices[0]!.standardModel = "Grok Image";
+crossFamilyImageStation.prices[0]!.family = "grok";
+const crossFamilyModelIndex = buildTransitModelIndex([crossFamilyImageStation]);
+assertDeepEqual(
+  hydrateTransitModelIndexSummaries(crossFamilyModelIndex, "image"),
+  getTransitModelSummaries([crossFamilyImageStation], "image"),
+);
+assertDeepEqual(
+  hydrateTransitModelIndexSummaries(crossFamilyModelIndex, "grok"),
+  getTransitModelSummaries([crossFamilyImageStation], "grok"),
+);
 
 const neutralStation = station({
   id: "neutral-station",

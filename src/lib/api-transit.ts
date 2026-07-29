@@ -2290,6 +2290,192 @@ export type TransitModelSummary = {
   prices: TransitModelPriceEntry[];
 };
 
+export type TransitModelPriceReference = {
+  stationIndex: number;
+  priceIndex: number;
+  rechargeCoefficient: number | null;
+  combinedRate: number | null;
+};
+
+export type TransitModelIndexSummary = Omit<TransitModelSummary, "prices"> & {
+  priceEntryIndexes: number[];
+};
+
+export type TransitModelIndex = {
+  version: 1;
+  generatedAt: string;
+  stations: TransitStation[];
+  priceEntries: TransitModelPriceReference[];
+  summaries: TransitModelIndexSummary[];
+  summariesByFamily: Record<TransitModelFamily, TransitModelIndexSummary[]>;
+};
+
+export function buildTransitModelIndex(
+  stations: TransitStation[],
+  generatedAt = new Date().toISOString()
+): TransitModelIndex {
+  const priceEntryIndexes = new Map<TransitModelPrice, number>();
+  const priceEntries: TransitModelPriceReference[] = [];
+  stations.forEach((station, stationIndex) => {
+    station.prices.forEach((price, priceIndex) => {
+      const rechargeCoefficient =
+        getRechargeCoefficientFromRatio(price.rechargeRatio) ??
+        getStationRechargeCoefficient(station);
+      priceEntryIndexes.set(price, priceEntries.length);
+      priceEntries.push({
+        stationIndex,
+        priceIndex,
+        rechargeCoefficient,
+        combinedRate: getCombinedRateForPrice(station, price),
+      });
+    });
+  });
+
+  const normalizeSummaries = (summaries: TransitModelSummary[]): TransitModelIndexSummary[] => (
+    summaries.map(({ prices, ...summary }) => ({
+      ...summary,
+      priceEntryIndexes: prices.map((entry) => {
+        const entryIndex = priceEntryIndexes.get(entry.price);
+        if (entryIndex === undefined) throw new Error("Transit model index could not resolve a price reference.");
+        return entryIndex;
+      }),
+    }))
+  );
+  const summaries = normalizeSummaries(getTransitModelSummaries(stations, "all"));
+  const summariesByFamily = Object.fromEntries(
+    TRANSIT_MODEL_FAMILY_ORDER.map((family) => [
+      family,
+      normalizeSummaries(getTransitModelSummaries(stations, family)),
+    ])
+  ) as Record<TransitModelFamily, TransitModelIndexSummary[]>;
+
+  return {
+    version: 1,
+    generatedAt,
+    stations,
+    priceEntries,
+    summaries,
+    summariesByFamily,
+  };
+}
+
+export function hydrateTransitModelIndexSummaries(
+  index: TransitModelIndex,
+  family: "all" | TransitModelFamily = "all"
+): TransitModelSummary[] {
+  const summaries = family === "all" ? index.summaries : index.summariesByFamily[family];
+  return summaries.map(({ priceEntryIndexes, ...summary }) => ({
+    ...summary,
+    prices: priceEntryIndexes.map((entryIndex) => {
+      const reference = index.priceEntries[entryIndex];
+      if (!reference) throw new Error("Transit model index contains an invalid entry reference.");
+      const station = index.stations[reference.stationIndex];
+      const price = station?.prices[reference.priceIndex];
+      if (!station || !price) throw new Error("Transit model index contains an invalid price reference.");
+      return {
+        station,
+        price,
+        rechargeCoefficient: reference.rechargeCoefficient,
+        combinedRate: reference.combinedRate,
+      };
+    }),
+  }));
+}
+
+export function isTransitModelIndex(value: unknown): value is TransitModelIndex {
+  if (!value || typeof value !== "object") return false;
+  const index = value as Partial<TransitModelIndex>;
+  if (
+    index.version !== 1 ||
+    typeof index.generatedAt !== "string" ||
+    !Number.isFinite(new Date(index.generatedAt).getTime()) ||
+    !Array.isArray(index.stations) ||
+    !Array.isArray(index.priceEntries) ||
+    !Array.isArray(index.summaries) ||
+    !index.summariesByFamily ||
+    typeof index.summariesByFamily !== "object"
+  ) return false;
+
+  if (!index.stations.every((station) => (
+    station &&
+    typeof station.id === "string" &&
+    typeof station.slug === "string" &&
+    typeof station.name === "string" &&
+    Array.isArray(station.prices) &&
+    station.prices.every(isTransitModelIndexPrice)
+  ))) return false;
+
+  if (!index.priceEntries.every((reference) => {
+    if (
+      !reference ||
+      !isNonNegativeInteger(reference.stationIndex) ||
+      !isNonNegativeInteger(reference.priceIndex) ||
+      !isNullableFiniteNumber(reference.rechargeCoefficient) ||
+      !isNullableFiniteNumber(reference.combinedRate)
+    ) return false;
+    return Boolean(index.stations?.[reference.stationIndex]?.prices[reference.priceIndex]);
+  })) return false;
+
+  const validateSummaries = (
+    summaries: TransitModelIndexSummary[],
+    scope: "all" | TransitModelFamily,
+  ) => summaries.every((summary) => {
+    if (
+      !summary ||
+      typeof summary.standardModel !== "string" ||
+      !isTransitModelFamily(summary.family) ||
+      typeof summary.familyLabel !== "string" ||
+      !isNonNegativeInteger(summary.stationCount) ||
+      !isNullableFiniteNumber(summary.bestCombinedRate) ||
+      !isNullableFiniteNumber(summary.worstCombinedRate) ||
+      !isNullableFiniteNumber(summary.bestFixedPrice) ||
+      !isNullableFiniteNumber(summary.worstFixedPrice) ||
+      !isNullableFiniteNumber(summary.averageAvailability) ||
+      !isNonNegativeInteger(summary.sampleCount) ||
+      !Array.isArray(summary.priceEntryIndexes) ||
+      (scope !== "all" && summary.family !== scope)
+    ) return false;
+
+    return summary.priceEntryIndexes.every((entryIndex) => {
+      if (!isNonNegativeInteger(entryIndex)) return false;
+      const reference = index.priceEntries?.[entryIndex];
+      const price = reference && index.stations?.[reference.stationIndex]?.prices[reference.priceIndex];
+      return Boolean(
+        price &&
+        price.standardModel === summary.standardModel &&
+        (scope === "all" || transitModelPriceMatchesFamily(price, scope))
+      );
+    });
+  });
+
+  if (!validateSummaries(index.summaries, "all")) return false;
+  return TRANSIT_MODEL_FAMILY_ORDER.every((family) => {
+    const summaries = index.summariesByFamily?.[family];
+    return Array.isArray(summaries) && validateSummaries(summaries, family);
+  });
+}
+
+function isTransitModelIndexPrice(value: unknown): value is TransitModelPrice {
+  if (!value || typeof value !== "object") return false;
+  const price = value as Partial<TransitModelPrice>;
+  const availability = price.availability as Partial<TransitAvailability> | undefined;
+  return (
+    typeof price.standardModel === "string" &&
+    isTransitModelFamily(price.family) &&
+    Boolean(availability) &&
+    isNonNegativeInteger(availability?.sevenDaySamples) &&
+    isNullableFiniteNumber(availability?.sevenDayRate)
+  );
+}
+
+function isNullableFiniteNumber(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
 export function getTransitModelFamilyOptions(): { id: TransitModelFamily; label: string }[] {
   return TRANSIT_MODEL_FAMILY_OPTIONS;
 }

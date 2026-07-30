@@ -32,12 +32,22 @@ function applyTheme(theme: ThemeMode) {
 }
 
 function subscribeToTheme(onStoreChange: () => void) {
+  function handleStorage(event: StorageEvent) {
+    if (event.key !== THEME_STORAGE_KEY) return;
+    const nextTheme: ThemeMode | null =
+      event.newValue === "dark" ? "dark" : event.newValue === "light" ? "light" : null;
+    if (nextTheme === null) return;
+    if (readCurrentTheme() !== nextTheme) {
+      applyTheme(nextTheme);
+    }
+    onStoreChange();
+  }
   window.addEventListener(THEME_CHANGE_EVENT, onStoreChange);
-  window.addEventListener("storage", onStoreChange);
+  window.addEventListener("storage", handleStorage);
 
   return () => {
     window.removeEventListener(THEME_CHANGE_EVENT, onStoreChange);
-    window.removeEventListener("storage", onStoreChange);
+    window.removeEventListener("storage", handleStorage);
   };
 }
 

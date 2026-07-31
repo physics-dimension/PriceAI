@@ -39,6 +39,7 @@ const {
   normalizeLdxpRuntimeSettings,
   normalizeShopApiItemOfferUrl,
   nextStorefrontLowestAvailableSpec,
+  probeShopApiSourceLightweight,
   rewriteLdxpUrlHost,
   resolveShopApiFeeModel,
   alternateLdxpHost,
@@ -349,6 +350,69 @@ const shopApiVisitorIds = Array.from({ length: 8 }, () => createShopApiVisitorId
 assert.equal(new Set(shopApiVisitorIds).size, shopApiVisitorIds.length);
 assert.equal(shopApiVisitorIds.every((value) => /^[a-f0-9]{24}$/.test(value)), true);
 assert.equal(shopApiVisitorIds.some((value) => value.startsWith("probe")), false);
+const lightweightProbeCalls = [];
+const lightweightProbe = await probeShopApiSourceLightweight(
+  {
+    id: "lightweight-shop",
+    name: "轻量测试店",
+    entry_url: "https://shop.example/shop/demo",
+    base_url: "https://shop.example",
+  },
+  {
+    pageSize: 20,
+    async requestJson(url, body, referer) {
+      lightweightProbeCalls.push({ url, body, referer });
+      if (url.endsWith("/info")) {
+        return {
+          code: 1,
+          data: {
+            nickname: "轻量测试店",
+            link: "https://shop.example/shop/demo",
+          },
+        };
+      }
+      return {
+        code: 1,
+        data: {
+          total: 1,
+          list: [
+            {
+              name: "ChatGPT Team",
+              price: "99.00",
+              extend: { stock_count: 3 },
+            },
+          ],
+        },
+      };
+    },
+  },
+);
+assert.equal(lightweightProbe.requestCount, 2);
+assert.equal(lightweightProbe.comparableItemCount, 1);
+assert.equal(lightweightProbe.samples[0].price, 99);
+assert.equal(lightweightProbeCalls.length, 2);
+assert.equal(lightweightProbeCalls[0].url, "https://shop.example/shopApi/Shop/info");
+assert.equal(lightweightProbeCalls[1].url, "https://shop.example/shopApi/Shop/goodsList");
+assert.equal(lightweightProbeCalls[1].body.current, 1);
+assert.equal(lightweightProbeCalls[1].body.pageSize, 20);
+let lightweightFailureCalls = 0;
+await assert.rejects(
+  () => probeShopApiSourceLightweight(
+    {
+      id: "limited-shop",
+      name: "限流测试店",
+      entry_url: "https://shop.example/shop/limited",
+    },
+    {
+      async requestJson() {
+        lightweightFailureCalls += 1;
+        throw new Error("returned HTTP 520");
+      },
+    },
+  ),
+  /HTTP 520/,
+);
+assert.equal(lightweightFailureCalls, 1);
 assert.deepEqual(normalizeLdxpRuntimeSettings(null), {
   mode: "auto",
   activeHost: "www.ldxp.cn",

@@ -1,0 +1,71 @@
+name: Bootstrap Sub2API Accounts
+
+on:
+  workflow_dispatch:
+    inputs:
+      station:
+        description: "Optional comma-separated station ids"
+        required: false
+        default: ""
+      skip_public_collection:
+        description: "Skip public profile collection"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: bootstrap-sub2api-accounts
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci --omit=dev
+
+      - name: Register unattended accounts and create monitor keys
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          API_TRANSIT_CREDENTIAL_ENCRYPTION_KEY: ${{ secrets.API_TRANSIT_CREDENTIAL_ENCRYPTION_KEY }}
+          PRICEAI_STATION_MONITOR_SOURCE_TYPE: public_status
+          REQUESTED_STATION: ${{ inputs.station }}
+          SKIP_PUBLIC_COLLECTION: ${{ inputs.skip_public_collection }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "$NEXT_PUBLIC_SUPABASE_URL" ] || missing+=(NEXT_PUBLIC_SUPABASE_URL)
+          [ -n "$SUPABASE_SERVICE_ROLE_KEY" ] || missing+=(SUPABASE_SERVICE_ROLE_KEY)
+          [ -n "$API_TRANSIT_CREDENTIAL_ENCRYPTION_KEY" ] || missing+=(API_TRANSIT_CREDENTIAL_ENCRYPTION_KEY)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "缺少 GitHub Actions secrets：${missing[*]}"
+            exit 1
+          fi
+
+          args=()
+          [ -z "${REQUESTED_STATION:-}" ] || args+=(--station "$REQUESTED_STATION")
+          [ "${SKIP_PUBLIC_COLLECTION:-false}" != "true" ] || args+=(--skip-public-collection)
+          node scripts/bootstrap-sub2api-accounts.mjs "${args[@]}"
+
+      - name: Refresh API transit public cache
+        env:
+          COLLECT_PRICES_URL: ${{ secrets.COLLECT_PRICES_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          BASE_URL=$(node -e 'const u=new URL(process.env.COLLECT_PRICES_URL); u.pathname=u.pathname.replace(/\/api\/cron\/(?:collect-prices|api-transit-probe|api-transit-revalidate)\/?$/,"")||"/"; u.search=""; u.hash=""; console.log(u.toString().replace(/\/$/,""))')
+          response=$(curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/cron/api-transit-revalidate")
+          node -e 'const p=JSON.parse(process.argv[1]); if(p.ok===false) process.exit(1); console.log(JSON.stringify({stationCount:p.snapshot?.stationCount,generatedAt:p.snapshot?.generatedAt,revalidatedPaths:p.revalidatedPaths?.length||0}))' "$response"

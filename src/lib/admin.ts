@@ -616,7 +616,7 @@ export async function upsertRawOffers(
         entryUrl: offer.sourceUrl,
         collectionMethod,
         shopCreatedAt: offer.sourceShopCreatedAt,
-        notes: collectionMethod === "http" ? "由自动价格采集脚本维护。" : "由半自动浏览器采集助手创建。",
+        notes: collectionMethod === "http" ? undefined : "由半自动浏览器采集助手创建。",
       });
       sourceCache.set(sourceKey, source);
     }

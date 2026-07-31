@@ -1175,7 +1175,10 @@ async function listCredentialApiKeys(supabase, stationIds) {
     throw error;
   }
 
-  const secret = envValue("API_TRANSIT_CREDENTIAL_ENCRYPTION_KEY");
+  const secret = credentialEncryptionSecret({
+    dedicatedSecret: envValue("API_TRANSIT_CREDENTIAL_ENCRYPTION_KEY"),
+    adminSecret: envValue("ADMIN_SESSION_SECRET"),
+  });
   if (!secret) {
     output.unavailableReason = "missing_credential_encryption_key";
     return output;
@@ -1207,6 +1210,13 @@ async function listCredentialApiKeys(supabase, stationIds) {
   }
 
   return output;
+}
+
+function credentialEncryptionSecret({ dedicatedSecret, adminSecret }) {
+  const dedicated = stringValue(dedicatedSecret);
+  if (dedicated) return dedicated;
+  const admin = stringValue(adminSecret);
+  return admin ? `priceai:api-transit-credentials:v1:${admin}` : "";
 }
 
 function emptyCredentialStore() {
@@ -1850,6 +1860,7 @@ function errorMessage(error) {
 export const __test = {
   completionAttempts,
   completionBody,
+  credentialEncryptionSecret,
   availabilitySampleMatchesActiveOfferScope,
   availabilitySamplesFromProbe,
   filterStationIdsWithoutPublicStatus,

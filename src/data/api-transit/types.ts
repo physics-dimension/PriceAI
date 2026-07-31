@@ -39,6 +39,7 @@ export type TransitRiskLabel =
 export type TransitUsageAdvice = "try_small" | "cautious" | "not_recommended" | "pending";
 export type TransitAvailabilitySourceType =
   | "priceai_probe"
+  | "station_monitor"
   | "public_status"
   | "public_model_catalog"
   | "partner_api"

@@ -992,6 +992,87 @@ async function collectShopApi(target, options = {}) {
   }
 }
 
+export async function probeShopApiSourceLightweight(source, options = {}) {
+  const sourceUrl = String(
+    source?.entry_url ||
+    source?.entryUrl ||
+    source?.sourceUrl ||
+    source?.url ||
+    "",
+  ).trim();
+  const token = shopTokenFromUrl(sourceUrl);
+  if (!sourceUrl || !token) {
+    throw new Error("轻量验证需要有效的 /shop/<店铺标识> 入口。");
+  }
+
+  const base = String(
+    options.baseUrl ||
+    source?.base_url ||
+    source?.baseUrl ||
+    deriveBaseUrl(sourceUrl),
+  ).replace(/\/$/, "");
+  const pageSize = integerInRange(
+    options.pageSize || options["page-size"],
+    1,
+    SHOP_API_LIST_PAGE_SIZE,
+    20,
+  );
+  const requestJson = options.requestJson || options.shopApiRequestJson || postJson;
+  const shopInfoUrl = `${base}/shopApi/Shop/info`;
+  const shopInfo = await requestJson(
+    shopInfoUrl,
+    { token, category_key: "" },
+    sourceUrl,
+    null,
+  );
+  if (shopInfo?.code !== 1 || !shopInfo?.data) {
+    const message = cleanText(shopInfo?.msg || shopInfo?.message);
+    throw new Error(`${shopInfoUrl} 未返回可用店铺信息${message ? `：${message}` : ""}`);
+  }
+
+  const shopUrl = shopInfo.data.link || sourceUrl;
+  const goodsListUrl = `${base}/shopApi/Shop/goodsList`;
+  const goodsList = await requestJson(
+    goodsListUrl,
+    {
+      token,
+      keywords: "",
+      category_id: 0,
+      goods_type: "card",
+      current: 1,
+      pageSize,
+    },
+    shopUrl,
+    null,
+  );
+  if (goodsList?.code !== 1 || !Array.isArray(goodsList?.data?.list)) {
+    const message = cleanText(goodsList?.msg || goodsList?.message);
+    throw new Error(`${goodsListUrl} 未返回可用商品列表${message ? `：${message}` : ""}`);
+  }
+
+  const items = goodsList.data.list;
+  const comparableItems = items.filter((item) =>
+    cleanText(item?.name) &&
+    numberOrNull(item?.price ?? item?.real_price) !== null
+  );
+  return {
+    sourceId: source?.id || source?.sourceId || null,
+    sourceName: source?.name || source?.sourceName || null,
+    storeName: cleanText(shopInfo.data.nickname || source?.name || source?.sourceName),
+    shopUrl,
+    requestCount: 2,
+    pageSize,
+    itemCount: items.length,
+    comparableItemCount: comparableItems.length,
+    reportedItemCount: nonNegativeInteger(goodsList.data.total),
+    samples: comparableItems.slice(0, 3).map((item) => ({
+      title: cleanText(item.name),
+      price: numberOrNull(item.price ?? item.real_price),
+      stockCount: numberOrNull(item.extend?.stock_count),
+    })),
+  };
+}
+
 export async function verifyShopApiOffer(target, currentOffer, options = {}) {
   const itemUrl = normalizeShopApiItemOfferUrl(currentOffer?.url) || currentOffer?.url;
   const goodsKey = goodsKeyFromUrl(itemUrl);
@@ -5997,22 +6078,36 @@ async function fetchText(url) {
 }
 
 async function postJson(url, body, referer, requestOptions = null) {
-  const response = await safeFetch(url, {
-    method: "POST",
-    headers: {
-      ...defaultHeaders(referer || url),
-      "content-type": "application/json",
-      accept: "application/json, text/plain, */*",
-      visitorid: createShopApiVisitorId(),
-      referer: referer || url,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(20_000),
-    ...requestOptions,
-  });
+  const requestReferer = normalizeHttpHeaderUrl(referer || url);
+  let response;
+  try {
+    response = await safeFetch(url, {
+      method: "POST",
+      headers: {
+        ...defaultHeaders(requestReferer),
+        "content-type": "application/json",
+        accept: "application/json, text/plain, */*",
+        visitorid: createShopApiVisitorId(),
+        referer: requestReferer,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20_000),
+      ...requestOptions,
+    });
+  } catch (error) {
+    throw new Error(`${url} 请求失败：${errorMessage(error)}`, { cause: error });
+  }
 
   if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`);
   return parseJsonResponse(response, url);
+}
+
+function normalizeHttpHeaderUrl(value) {
+  try {
+    return new URL(String(value || "")).toString();
+  } catch {
+    return encodeURI(String(value || ""));
+  }
 }
 
 async function parseJsonResponse(response, url) {

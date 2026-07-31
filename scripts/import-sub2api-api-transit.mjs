@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { webcrypto } from "node:crypto";
+import { randomBytes, webcrypto } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
@@ -17,6 +17,11 @@ const userAgent = "Mozilla/5.0 PriceAI/1.0 APITransitSub2APICollector";
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_RECHARGE_RATIO = "1:1";
 const STALE_UNKNOWN_AVAILABILITY_NOTE_PATTERN = /PriceAI API Key 探测|PriceAI 临时 Key|单轮准入抽样|近 7 日 .*样本成功/;
+const STATION_MONITOR_SOURCE_TYPE =
+  process.env.PRICEAI_STATION_MONITOR_SOURCE_TYPE === "public_status"
+    ? "public_status"
+    : "station_monitor";
+const STATION_MONITOR_SOURCE_LABEL = "Sub2API 站方监测";
 
 const targetPlans = [
   {
@@ -216,7 +221,9 @@ if (isCli()) {
   const options = normalizeOptions(parseArgs(process.argv.slice(2)));
 
   try {
-    const result = await importSub2ApiTransit(options);
+    const result = options.monitorOnly
+      ? await syncSub2ApiMonitor(options)
+      : await importSub2ApiTransit(options);
     printSummary(result);
 
     if (options.verbose || options.dryRun) {
@@ -240,16 +247,41 @@ export async function importSub2ApiTransit(options = {}) {
   const startedAt = new Date().toISOString();
   const source = normalizeSource(options);
   const accountCredential = await resolveLoginCredential(source, options);
-  const auth = await login(source, options, accountCredential);
-  if (options.saveAccountCredential && accountCredential.source !== "database") {
-    await saveAccountCredential(source, accountCredential, startedAt, options);
+  if (accountCredential.source === "registered") {
+    await saveAccountCredential(source, accountCredential, startedAt, options, "submitted");
   }
+  const auth = await login(source, options, accountCredential);
+  if (
+    accountCredential.source === "registered" ||
+    (accountCredential.source === "database" && accountCredential.credentialStatus === "submitted") ||
+    (options.saveAccountCredential && accountCredential.source !== "database")
+  ) {
+    await saveAccountCredential(source, accountCredential, startedAt, options, "ready");
+  }
+  const channelMonitorResult = await fetchChannelMonitors(source, auth, options)
+    .then((items) => ({ items, error: null }))
+    .catch((error) => ({ items: [], error: errorMessage(error) }));
   const groups = await fetchGroups(source, auth, options);
-  const selectedTargets = selectTargetGroups(groups);
+  const selectedTargets = options.monitorKeyOnly
+    ? selectMonitorKeyTarget(groups)
+    : selectTargetGroups(groups);
   const keys = await fetchKeys(source, auth, options);
-  const keyResults = await ensureTargetKeys(source, auth, selectedTargets, keys, options);
-  const probeResults = await probeTargets(source, selectedTargets, keyResults, options);
-  const rows = buildRows(source, groups, selectedTargets, keyResults, probeResults, startedAt, options);
+  const keyResults = options.monitorKeyOnly
+    ? await ensureMonitorKey(source, auth, selectedTargets, keys, options)
+    : await ensureTargetKeys(source, auth, selectedTargets, keys, options);
+  const probeResults = options.monitorKeyOnly
+    ? []
+    : await probeTargets(source, selectedTargets, keyResults, options);
+  const rows = buildRows(
+    source,
+    groups,
+    selectedTargets,
+    keyResults,
+    probeResults,
+    channelMonitorResult,
+    startedAt,
+    options,
+  );
   rows.credentialSubmissions = [];
   rows.credentials = [];
   if (options.postCredentials) {
@@ -263,6 +295,7 @@ export async function importSub2ApiTransit(options = {}) {
     post: Boolean(options.post || options.db),
     publish: Boolean(options.publish),
     source: "sub2api_account",
+    accountAction: accountCredential.source === "registered" ? "registered" : "existing",
     startedAt,
     finishedAt: new Date().toISOString(),
     station: {
@@ -276,10 +309,12 @@ export async function importSub2ApiTransit(options = {}) {
       selectedGroups: selectedTargets.filter((target) => target.group).length,
       existingKeys: keys.length,
       createdKeys: keyResults.filter((result) => result.created).length,
-      targets: targetPlans.length,
+      targets: selectedTargets.length,
       successfulTargets: probeResults.filter((result) => result.ok).length,
+      channelMonitors: channelMonitorResult.items.length,
       offers: rows.offers.length,
       runs: rows.runs.length,
+      availabilitySamples: rows.availabilitySamples.length,
       credentials: rows.credentials.length,
     },
     groups: groups.map(redactGroup),
@@ -296,6 +331,132 @@ export async function importSub2ApiTransit(options = {}) {
   }
 
   return result;
+}
+
+export async function syncSub2ApiMonitor(options = {}) {
+  options = normalizeOptions(options);
+  const startedAt = new Date().toISOString();
+  const source = normalizeSource(options);
+  const credential = await resolveLoginCredential(source, options);
+  const auth = await login(source, options, credential);
+  const monitors = await fetchChannelMonitors(source, auth, options);
+  const runId = stableId("api-transit-sub2api-monitor-run", source.id, startedAt);
+  const supabase = options.post || options.db ? getSupabaseClient() : null;
+  if ((options.post || options.db) && !supabase) {
+    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY for --post/--db.");
+  }
+  const offers = supabase ? await readMonitorTargetOffers(supabase, source.id) : [];
+  const station = { id: source.id };
+  const monitorRows = applyChannelMonitorSnapshot(
+    source,
+    station,
+    offers,
+    monitors,
+    startedAt,
+    runId,
+  );
+  const run = {
+    id: runId,
+    station_id: source.id,
+    run_type: "public_pricing",
+    status: "success",
+    model_count: monitors.reduce((total, monitor) => total + monitor.models.length, 0),
+    offer_count: offers.filter((offer) => offer.availability_source_type === STATION_MONITOR_SOURCE_TYPE).length,
+    error_message: null,
+    source_url: `${source.apiV1BaseUrl}/channel-monitors`,
+    started_at: startedAt,
+    finished_at: new Date().toISOString(),
+    raw_snapshot: { channelMonitors: monitors },
+    logs: {
+      collectorKind: "sub2api_station_monitor",
+      auth: "account_login",
+      channelMonitorCount: monitors.length,
+      availabilitySamples: monitorRows.availabilitySamples.length,
+    },
+  };
+
+  let database = null;
+  if (supabase) {
+    database = await postMonitorOnlyRows(supabase, station, offers, run, monitorRows.availabilitySamples);
+  }
+
+  return {
+    dryRun: Boolean(options.dryRun),
+    post: Boolean(options.post || options.db),
+    publish: false,
+    source: "sub2api_station_monitor",
+    accountAction: "existing",
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    station: {
+      id: source.id,
+      name: source.name,
+      websiteUrl: source.websiteUrl,
+      apiBaseUrl: source.apiBaseUrl,
+    },
+    counts: {
+      groups: 0,
+      selectedGroups: 0,
+      existingKeys: 0,
+      createdKeys: 0,
+      targets: 0,
+      successfulTargets: 0,
+      channelMonitors: monitors.length,
+      offers: offers.filter((offer) => offer.availability_source_type === STATION_MONITOR_SOURCE_TYPE).length,
+      runs: 1,
+      credentials: 0,
+      availabilitySamples: monitorRows.availabilitySamples.length,
+    },
+    channelMonitors: monitors,
+    stations: monitors.length ? [station] : [],
+    offers: offers.filter((offer) => offer.availability_source_type === STATION_MONITOR_SOURCE_TYPE),
+    runs: [run],
+    database,
+  };
+}
+
+async function readMonitorTargetOffers(supabase, stationId) {
+  const { data, error } = await supabase
+    .from("api_transit_offers")
+    .select("id,station_id,standard_model,raw_model_name,group_name,status")
+    .eq("station_id", stationId)
+    .neq("status", "inactive");
+  if (error) throw error;
+  return data || [];
+}
+
+async function postMonitorOnlyRows(supabase, station, offers, run, availabilitySamples) {
+  const stationId = station.id;
+  const stationPatch = { ...station };
+  delete stationPatch.id;
+  if (Object.keys(stationPatch).length) {
+    const { error } = await supabase.from("api_transit_stations").update(stationPatch).eq("id", stationId);
+    if (error) throw error;
+  }
+
+  const monitoredOffers = offers.filter(
+    (offer) => offer.availability_source_type === STATION_MONITOR_SOURCE_TYPE,
+  );
+  for (const offer of monitoredOffers) {
+    const patch = { ...offer };
+    delete patch.id;
+    delete patch.station_id;
+    delete patch.standard_model;
+    delete patch.raw_model_name;
+    delete patch.group_name;
+    delete patch.status;
+    const { error } = await supabase.from("api_transit_offers").update(patch).eq("id", offer.id);
+    if (error) throw error;
+  }
+
+  await upsertRows(supabase, "api_transit_detection_runs", [run], { onConflict: "id" });
+  await upsertRows(supabase, "api_transit_availability_samples", availabilitySamples, { onConflict: "id" });
+  return {
+    skipped: false,
+    stationUpdated: Object.keys(stationPatch).length > 0,
+    offersUpdated: monitoredOffers.length,
+    availabilitySamples: availabilitySamples.length,
+  };
 }
 
 function normalizeSource(options) {
@@ -348,7 +509,104 @@ async function resolveLoginCredential(source, options) {
   const stored = await readStoredAccountCredential(source, options);
   if (stored) return stored;
 
+  if (options.register) {
+    return registerAccount(source, options, email);
+  }
+
   throw new Error("Missing --email/--password, SUB2API_EMAIL/SUB2API_PASSWORD, or stored test_account credential.");
+}
+
+async function registerAccount(source, options, fallbackEmail) {
+  const email = String(options.registerEmail || fallbackEmail || "").trim();
+  if (!email) throw new Error("注册 Sub2API 账号需要 --register-email。");
+
+  await assertCredentialStationExists(source);
+  const settings = await fetchRegistrationSettings(source, options);
+  assertRegistrationIsUnattended(settings, source);
+
+  const credential = {
+    source: "registered",
+    email,
+    password: generateRandomPassword(),
+    loginUrl: options.loginUrl || options["login-url"] || source.dashboardUrl,
+  };
+
+  try {
+    await fetchJson(`${source.apiV1BaseUrl}/auth/register`, {
+      method: "POST",
+      timeoutMs: options.timeoutMs,
+      body: JSON.stringify({
+        email: credential.email,
+        password: credential.password,
+        verify_code: "",
+        turnstile_token: "",
+        promo_code: "",
+        invitation_code: "",
+        aff_code: "",
+      }),
+    });
+  } catch (error) {
+    const message = errorMessage(error);
+    if (/already|exist|duplicate|已存在|已注册|重复/i.test(message)) {
+      throw new Error(`${source.name} 的该邮箱已经注册；未尝试重置密码。`);
+    }
+    throw new Error(
+      `${source.name} 注册失败${error?.status ? `（HTTP ${error.status}）` : ""}；为避免重复创建，未重试。`,
+    );
+  }
+
+  return credential;
+}
+
+async function assertCredentialStationExists(source) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    throw new Error("注册前需要本地 Supabase，以便立即加密保存随机密码。");
+  }
+
+  const { data, error } = await supabase
+    .from("api_transit_stations")
+    .select("id")
+    .eq("id", source.id)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data?.id) {
+    throw new Error(`${source.name} 尚未写入本地商家库；为避免注册后丢失随机密码，已在提交注册前停止。`);
+  }
+}
+
+async function fetchRegistrationSettings(source, options) {
+  const response = await fetchJson(`${source.apiV1BaseUrl}/settings/public`, {
+    timeoutMs: options.timeoutMs,
+  });
+  return response.json?.data && typeof response.json.data === "object"
+    ? response.json.data
+    : response.json;
+}
+
+function assertRegistrationIsUnattended(settings, source) {
+  if (!settings || typeof settings !== "object") {
+    throw new Error(`${source.name} 没有返回有效的公开注册设置。`);
+  }
+  if (settings.registration_enabled !== true) {
+    throw new Error(`${source.name} 当前没有开放注册。`);
+  }
+  if (settings.payment_enabled !== true) {
+    throw new Error(`${source.name} 当前没有开启站内支付，不符合“能注册、能充值”的筛选条件。`);
+  }
+  if (settings.email_verify_enabled === true) {
+    throw new Error(`${source.name} 当前要求邮箱验证码，已跳过自动注册。`);
+  }
+  if (settings.invitation_code_enabled === true) {
+    throw new Error(`${source.name} 当前要求邀请码，已跳过自动注册。`);
+  }
+  if (settings.turnstile_enabled === true) {
+    throw new Error(`${source.name} 当前要求 Turnstile 人机验证，已跳过自动注册。`);
+  }
+}
+
+function generateRandomPassword() {
+  return `${randomBytes(24).toString("base64url")}aA1!`;
 }
 
 async function readStoredAccountCredential(source, options) {
@@ -357,7 +615,7 @@ async function readStoredAccountCredential(source, options) {
 
   const { data, error } = await supabase
     .from("api_transit_credentials")
-    .select("id,encrypted_payload,credential_meta,expires_at,created_at")
+    .select("id,status,encrypted_payload,credential_meta,expires_at,created_at")
     .eq("station_id", source.id)
     .eq("credential_type", "test_account")
     .in("status", ["ready", "submitted"])
@@ -379,6 +637,7 @@ async function readStoredAccountCredential(source, options) {
     return {
       source: "database",
       credentialId: row.id,
+      credentialStatus: row.status,
       email: username,
       password,
       loginUrl: stringValue(payload?.login_url) || source.dashboardUrl,
@@ -388,7 +647,7 @@ async function readStoredAccountCredential(source, options) {
   return null;
 }
 
-async function saveAccountCredential(source, credential, collectedAt, options) {
+async function saveAccountCredential(source, credential, collectedAt, options, credentialStatus = "ready") {
   const supabase = getSupabaseClient();
   if (!supabase) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY for saving account credential.");
 
@@ -399,7 +658,7 @@ async function saveAccountCredential(source, credential, collectedAt, options) {
   const meta = {
     accessMode: credentialType,
     access_mode: credentialType,
-    credentialStatus: "ready",
+    credentialStatus,
     credentialType,
     stationId: source.id,
     login_host: safeHost(loginUrl),
@@ -428,10 +687,13 @@ async function saveAccountCredential(source, credential, collectedAt, options) {
           credentialLoginHost: meta.login_host,
         },
         parse_status: "parsed",
-        probe_status: "needs_login",
+        probe_status: credentialStatus === "ready" ? "needs_login" : "pending",
         review_status: "approved",
         station_id: source.id,
-        admin_note: "已保存加密测试账号凭据；不在后台明文展示。",
+        admin_note:
+          credentialStatus === "ready"
+            ? "已保存加密测试账号凭据并验证登录；不在后台明文展示。"
+            : "注册已成功，随机密码已先加密保存；等待登录验证。",
       },
     ],
     { onConflict: "id" },
@@ -446,7 +708,7 @@ async function saveAccountCredential(source, credential, collectedAt, options) {
         submission_id: submissionId,
         station_id: source.id,
         credential_type: credentialType,
-        status: "ready",
+        status: credentialStatus,
         encrypted_payload: await encryptCredentialPayload(
           {
             type: credentialType,
@@ -469,12 +731,175 @@ async function saveAccountCredential(source, credential, collectedAt, options) {
 }
 
 async function fetchGroups(source, auth, options) {
-  const response = await fetchJson(`${source.apiV1BaseUrl}/groups/available`, {
+  const availableResponse = await fetchJson(`${source.apiV1BaseUrl}/groups/available`, {
     timeoutMs: options.timeoutMs,
     headers: authHeaders(auth),
   });
-  const groups = Array.isArray(response.json?.data) ? response.json.data : Array.isArray(response.json) ? response.json : [];
-  return groups.map(normalizeGroup).filter((group) => group.status === "active");
+  const availableGroups = arrayPayload(availableResponse.json);
+  let rateRows = [];
+  try {
+    const ratesResponse = await fetchJson(`${source.apiV1BaseUrl}/groups/rates`, {
+      timeoutMs: options.timeoutMs,
+      headers: authHeaders(auth),
+    });
+    rateRows = groupRateRows(ratesResponse.json);
+  } catch (error) {
+    if (error?.status !== 404 && error?.status !== 405) throw error;
+  }
+
+  const ratesById = new Map(
+    rateRows
+      .map(normalizeGroupRate)
+      .filter((row) => row.id !== null && row.multiplier !== null)
+      .map((row) => [Number(row.id), row.multiplier]),
+  );
+  return availableGroups
+    .map((group) => normalizeGroup(group, ratesById))
+    .filter((group) => group.status === "active");
+}
+
+async function fetchChannelMonitors(source, auth, options) {
+  let response;
+  try {
+    response = await fetchJson(`${source.apiV1BaseUrl}/channel-monitors`, {
+      timeoutMs: options.timeoutMs,
+      headers: authHeaders(auth),
+    });
+  } catch (error) {
+    if (error?.status === 404 || error?.status === 405) return [];
+    throw error;
+  }
+
+  const rows = arrayPayload(response.json);
+  return Promise.all(rows.map(async (row) => {
+    const monitorId = numberValue(row?.id);
+    let detail = null;
+    if (monitorId !== null) {
+      try {
+        const detailResponse = await fetchJson(`${source.apiV1BaseUrl}/channel-monitors/${monitorId}/status`, {
+          timeoutMs: options.timeoutMs,
+          headers: authHeaders(auth),
+        });
+        detail = detailResponse.json?.data || detailResponse.json || null;
+      } catch (error) {
+        if (error?.status !== 404 && error?.status !== 405) {
+          detail = { fetch_error: errorMessage(error) };
+        }
+      }
+    }
+    return normalizeChannelMonitor(row, detail);
+  }));
+}
+
+function normalizeChannelMonitor(row, detail = null) {
+  const timeline = (Array.isArray(row?.timeline) ? row.timeline : [])
+    .map((sample) => ({
+      status: stringValue(sample?.status),
+      ok: isOperationalMonitorStatus(sample?.status),
+      latencyMs: positiveInteger(sample?.latency_ms),
+      pingLatencyMs: positiveInteger(sample?.ping_latency_ms),
+      checkedAt: nullableTimestamp(sample?.checked_at),
+    }))
+    .filter((sample) => sample.checkedAt)
+    .sort((left, right) => new Date(left.checkedAt).getTime() - new Date(right.checkedAt).getTime())
+    .slice(-60);
+  const detailModels = Array.isArray(detail?.models) ? detail.models : [];
+  const fallbackModels = [
+    {
+      model: row?.primary_model,
+      latest_status: row?.primary_status,
+      latest_latency_ms: row?.primary_latency_ms,
+      availability_7d: row?.availability_7d,
+    },
+    ...(Array.isArray(row?.extra_models) ? row.extra_models.map((model) => ({
+      model: model?.model,
+      latest_status: model?.status,
+      latest_latency_ms: model?.latency_ms,
+    })) : []),
+  ];
+  const modelsByName = new Map();
+  for (const model of [...detailModels, ...fallbackModels]) {
+    const rawModel = stringValue(model?.model);
+    if (!rawModel) continue;
+    const key = normalizeModelId(rawModel);
+    const existing = modelsByName.get(key) || {};
+    modelsByName.set(key, {
+      rawModel,
+      status: stringValue(model?.latest_status ?? model?.status) || existing.status || "unknown",
+      latestLatencyMs: positiveInteger(model?.latest_latency_ms ?? model?.latency_ms) ?? existing.latestLatencyMs ?? null,
+      availability7d: normalizeMonitorPercent(model?.availability_7d) ?? existing.availability7d ?? null,
+      availability15d: normalizeMonitorPercent(model?.availability_15d) ?? existing.availability15d ?? null,
+      availability30d: normalizeMonitorPercent(model?.availability_30d) ?? existing.availability30d ?? null,
+      avgLatency7dMs: positiveInteger(model?.avg_latency_7d_ms) ?? existing.avgLatency7dMs ?? null,
+    });
+  }
+
+  const primaryModel = stringValue(row?.primary_model);
+  const primaryModelDetail = modelsByName.get(normalizeModelId(primaryModel));
+  return {
+    id: numberValue(row?.id),
+    name: stringValue(row?.name),
+    provider: stringValue(row?.provider),
+    groupName: stringValue(row?.group_name),
+    primaryModel,
+    primaryStatus: stringValue(row?.primary_status) || primaryModelDetail?.status || "unknown",
+    primaryLatencyMs: positiveInteger(row?.primary_latency_ms) ?? primaryModelDetail?.latestLatencyMs ?? null,
+    primaryPingLatencyMs: positiveInteger(row?.primary_ping_latency_ms),
+    availability7d:
+      normalizeMonitorPercent(row?.availability_7d) ??
+      primaryModelDetail?.availability7d ??
+      summarizeTimelineRate(timeline),
+    avgLatency7dMs: primaryModelDetail?.avgLatency7dMs ?? null,
+    models: Array.from(modelsByName.values()),
+    timeline,
+    detailError: stringValue(detail?.fetch_error) || null,
+  };
+}
+
+function normalizeMonitorPercent(value) {
+  const parsed = numberValue(value);
+  if (parsed === null || parsed < 0) return null;
+  return Math.min(parsed / 100, 1);
+}
+
+function summarizeTimelineRate(timeline) {
+  if (!timeline.length) return null;
+  return timeline.filter((sample) => sample.ok).length / timeline.length;
+}
+
+function isOperationalMonitorStatus(value) {
+  return /^(?:operational|ok|success|healthy|up|available|normal)$/i.test(stringValue(value));
+}
+
+function arrayPayload(payload) {
+  const data = payload?.data;
+  if (Array.isArray(data?.items)) return data.items;
+  if (Array.isArray(data?.list)) return data.list;
+  if (Array.isArray(data)) return data;
+  return Array.isArray(payload) ? payload : [];
+}
+
+function groupRateRows(payload) {
+  const data = payload?.data ?? payload;
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== "object") return [];
+  return Object.entries(data).map(([groupId, multiplier]) => ({
+    group_id: groupId,
+    rate_multiplier: multiplier,
+  }));
+}
+
+function normalizeGroupRate(row) {
+  return {
+    id: numberValue(row?.group_id ?? row?.id),
+    multiplier: numberValue(
+      row?.user_rate_multiplier ??
+      row?.rate_multiplier ??
+      row?.effective_rate_multiplier ??
+      row?.multiplier ??
+      row?.rate,
+    ),
+  };
 }
 
 async function fetchKeys(source, auth, options) {
@@ -544,6 +969,77 @@ async function ensureTargetKeys(source, auth, selectedTargets, keys, options) {
   }
 
   return results;
+}
+
+async function ensureMonitorKey(source, auth, selectedTargets, keys, options) {
+  const selected = selectedTargets[0];
+  if (!selected?.group?.id) {
+    throw new Error(`${source.name} 没有可绑定监测 Key 的活跃分组。`);
+  }
+
+  const existing = keys.find(
+    (key) =>
+      Number(key.groupId) === Number(selected.group.id) &&
+      /^priceai-monitor(?:-|$)/i.test(String(key.name || "")) &&
+      String(key.status || "").toLowerCase() === "active",
+  );
+  if (existing) {
+    let key = existing.key;
+    if (!key && existing.id) {
+      const response = await fetchJson(`${source.apiV1BaseUrl}/keys/${existing.id}`, {
+        timeoutMs: options.timeoutMs,
+        headers: authHeaders(auth),
+      });
+      key = response.json?.data?.key || response.json?.key || null;
+    }
+    if (!key) {
+      throw new Error(`${source.name} 已存在 priceai-monitor Key，但接口未返回密钥内容；未创建重复 Key。`);
+    }
+    return [{
+      targetId: selected.plan.id,
+      group: selected.group,
+      created: false,
+      key,
+      keyId: existing.id,
+      keyName: existing.name,
+      error: null,
+    }];
+  }
+
+  if (options.dryRun) {
+    return [{
+      targetId: selected.plan.id,
+      group: selected.group,
+      created: false,
+      key: null,
+      keyId: null,
+      keyName: "priceai-monitor",
+      error: "missing_monitor_key_dry_run",
+    }];
+  }
+
+  const name = `priceai-monitor-${compactTimestamp(new Date())}`;
+  const response = await fetchJson(`${source.apiV1BaseUrl}/keys`, {
+    method: "POST",
+    timeoutMs: options.timeoutMs,
+    headers: authHeaders(auth),
+    body: JSON.stringify({ name, group_id: selected.group.id }),
+  });
+  const row = response.json?.data || response.json || {};
+  const key = row.key || row.api_key || row.token;
+  if (!key) {
+    throw new Error(`${source.name} 已创建监测 Key，但响应未返回密钥内容；已停止后续操作。`);
+  }
+  return [{
+    targetId: selected.plan.id,
+    group: selected.group,
+    created: true,
+    key,
+    keyId: row.id || null,
+    keyName: row.name || name,
+    createStatus: response.status,
+    error: null,
+  }];
 }
 
 async function probeTargets(source, selectedTargets, keyResults, options) {
@@ -688,16 +1184,33 @@ async function probeCompletion(source, apiKey, model, options) {
   return { ok: false, attempts };
 }
 
-function buildRows(source, groups, selectedTargets, keyResults, probeResults, collectedAt, options) {
+function buildRows(
+  source,
+  groups,
+  selectedTargets,
+  keyResults,
+  probeResults,
+  channelMonitorResult,
+  collectedAt,
+  options,
+) {
   const attempted = probeResults.filter((result) => result.groupId);
   const okCount = attempted.filter((result) => result.ok).length;
   const groupCount = groups.length;
   const pricingStatus = groupCount ? "success" : "failed";
-  const probeStatus = attempted.length && okCount === attempted.length ? "success" : okCount ? "partial" : "failed";
-  const probeNote = probeResults
-    .filter((result) => !result.ok)
-    .map((result) => `${result.standardModel}: ${result.error || "probe_failed"}`)
-    .join("；") || null;
+  const probeStatus = options.monitorKeyOnly
+    ? "success"
+    : attempted.length && okCount === attempted.length
+      ? "success"
+      : okCount
+        ? "partial"
+        : "failed";
+  const probeNote = options.monitorKeyOnly
+    ? null
+    : probeResults
+      .filter((result) => !result.ok)
+      .map((result) => `${result.standardModel}: ${result.error || "probe_failed"}`)
+      .join("；") || null;
   const channelTypes = unique(selectedTargets.map((target) => inferChannelType(target.group?.name || target.group?.platform || "")));
   const accountPools = unique(selectedTargets.map((target) => inferAccountPool(target.group?.name || "")));
 
@@ -711,7 +1224,9 @@ function buildRows(source, groups, selectedTargets, keyResults, probeResults, co
     status: groupCount ? "active" : "unknown",
     source_type: "manual_collected",
     commercial_relation: "none",
-    summary: `通过 Sub2API 登录态分组接口抓取 ${groups.length} 个活跃分组，并按 PriceAI 准入抽样只测试 GPT 5.5 与 Claude Opus 4.8。`,
+    summary: options.monitorKeyOnly
+      ? `通过 Sub2API 登录态分组接口抓取 ${groups.length} 个活跃分组，并创建一个加密保存的监测 Key；尚未执行模型调用。`
+      : `通过 Sub2API 登录态分组接口抓取 ${groups.length} 个活跃分组，并按 PriceAI 准入抽样只测试 GPT 5.5 与 Claude Opus 4.8。`,
     channel_types: channelTypes.length ? channelTypes : ["undisclosed"],
     account_pools: accountPools.length ? accountPools : ["undisclosed"],
     payment_methods: [],
@@ -726,9 +1241,11 @@ function buildRows(source, groups, selectedTargets, keyResults, probeResults, co
     availability_seven_day_samples: attempted.length,
     availability_first_checked_at: attempted.length ? collectedAt : null,
     availability_last_checked_at: collectedAt,
-    availability_note: "单轮准入抽样：每个家族只选择一个代表分组和一个目标模型；后续需接入定时监测替换为滚动样本。",
-    availability_source_type: "priceai_probe",
-    availability_source_label: "PriceAI 实测",
+    availability_note: options.monitorKeyOnly
+      ? "监测 Key 已准备但尚未调用模型；充值并启用定时探测后才会产生稳定性和延迟样本。"
+      : "单轮准入抽样：每个家族只选择一个代表分组和一个目标模型；后续需接入定时监测替换为滚动样本。",
+    availability_source_type: options.monitorKeyOnly ? "unknown" : "priceai_probe",
+    availability_source_label: options.monitorKeyOnly ? null : "PriceAI 实测",
     availability_source_url: null,
     feedback_pending_count: 0,
     feedback_verified_risk_count: 0,
@@ -742,15 +1259,26 @@ function buildRows(source, groups, selectedTargets, keyResults, probeResults, co
     last_collected_at: collectedAt,
     last_updated_at: collectedAt,
     published: Boolean(options.publish),
-    admin_note: `Sub2API 登录抓取 ${groups.length} 个分组，创建 ${keyResults.filter((result) => result.created).length} 个测试 Key，${okCount}/${attempted.length} 个目标模型通过。`,
+    admin_note: options.monitorKeyOnly
+      ? `Sub2API 登录抓取 ${groups.length} 个分组，创建 ${keyResults.filter((result) => result.created).length} 个监测 Key；未执行模型调用。`
+      : `Sub2API 登录抓取 ${groups.length} 个分组，创建 ${keyResults.filter((result) => result.created).length} 个测试 Key，${okCount}/${attempted.length} 个目标模型通过。`,
   };
 
   const offers = buildOfferRows(source, groups, probeResults, collectedAt);
+  const runId = stableId("api-transit-sub2api-run", source.id, collectedAt);
+  const monitorRows = applyChannelMonitorSnapshot(
+    source,
+    station,
+    offers,
+    channelMonitorResult.items,
+    collectedAt,
+    runId,
+  );
 
   const run = {
-    id: stableId("api-transit-sub2api-run", source.id, collectedAt),
+    id: runId,
     station_id: source.id,
-    run_type: "api_probe",
+    run_type: options.monitorKeyOnly ? "manual_review" : "api_probe",
     status: probeStatus,
     model_count: groups.length,
     offer_count: offers.length,
@@ -763,15 +1291,223 @@ function buildRows(source, groups, selectedTargets, keyResults, probeResults, co
       selectedTargets: selectedTargets.map(redactSelectedTarget),
       keyResults: keyResults.map(redactKeyResult),
       probeResults,
+      channelMonitors: channelMonitorResult.items,
     },
     logs: {
       collectorKind: "sub2api_account",
       auth: "account_login",
-      targetPolicy: "one_gpt_group_one_gpt_pro_group_one_claude_group",
+      targetPolicy: options.monitorKeyOnly
+        ? "one_cheapest_active_group_monitor_key_no_probe"
+        : "one_gpt_group_one_gpt_pro_group_one_claude_group",
+      channelMonitorEndpoint: `${source.apiV1BaseUrl}/channel-monitors`,
+      channelMonitorCount: channelMonitorResult.items.length,
+      channelMonitorError: channelMonitorResult.error,
     },
   };
 
-  return { stations: [station], offers, runs: [run] };
+  return { stations: [station], offers, runs: [run], availabilitySamples: monitorRows.availabilitySamples };
+}
+
+function applyChannelMonitorSnapshot(source, station, offers, monitors, collectedAt, runId) {
+  if (!monitors.length) return { availabilitySamples: [] };
+
+  const sourceUrl = new URL("/monitor", source.websiteUrl).href;
+  const stationEvidence = summarizeStationMonitorEvidence(monitors, collectedAt);
+  Object.assign(station, {
+    monitor_url: sourceUrl,
+    availability_seven_day_rate: stationEvidence.rate,
+    availability_seven_day_samples: stationEvidence.samples,
+    availability_first_checked_at: stationEvidence.firstCheckedAt,
+    availability_last_checked_at: stationEvidence.lastCheckedAt,
+    availability_latest_latency_ms: stationEvidence.latestLatencyMs,
+    availability_avg_latency_7d_ms: stationEvidence.avgLatency7dMs,
+    availability_note:
+      `Sub2API 站方 /monitor：${monitors.length} 个渠道监测，` +
+      `近 7 日可用率按站方监测目标汇总；非 PriceAI 独立实测。`,
+    availability_source_type: STATION_MONITOR_SOURCE_TYPE,
+    availability_source_label: STATION_MONITOR_SOURCE_LABEL,
+    availability_source_url: sourceUrl,
+  });
+
+  const modelEvidence = summarizeMonitorModelEvidence(monitors, collectedAt);
+  for (const offer of offers) {
+    const evidence = modelEvidence.get(offer.standard_model);
+    if (!evidence) continue;
+    Object.assign(offer, monitorAvailabilityFields(source, evidence, sourceUrl));
+  }
+
+  return {
+    availabilitySamples: buildChannelMonitorAvailabilitySamples(
+      source,
+      monitors,
+      modelEvidence,
+      collectedAt,
+      runId,
+      sourceUrl,
+    ),
+  };
+}
+
+function summarizeStationMonitorEvidence(monitors, collectedAt) {
+  const evidence = monitors
+    .map((monitor) => ({
+      rate: monitor.availability7d,
+      samples: Math.max(monitor.timeline.length, 1),
+      firstCheckedAt: monitor.timeline[0]?.checkedAt || collectedAt,
+      lastCheckedAt: monitor.timeline.at(-1)?.checkedAt || collectedAt,
+      latestLatencyMs: monitor.primaryLatencyMs,
+      avgLatency7dMs: monitor.avgLatency7dMs,
+    }))
+    .filter((item) => item.rate !== null);
+  return summarizeMonitorEvidence(evidence, collectedAt);
+}
+
+function summarizeMonitorModelEvidence(monitors, collectedAt) {
+  const byStandardModel = new Map();
+  for (const monitor of monitors) {
+    const primaryToken = normalizeModelId(monitor.primaryModel);
+    for (const model of monitor.models) {
+      const standardModel = standardModelFromMonitorModel(model.rawModel);
+      if (!standardModel) continue;
+      const isPrimary = normalizeModelId(model.rawModel) === primaryToken;
+      const rate = model.availability7d ?? (isPrimary ? monitor.availability7d : null);
+      if (rate === null) continue;
+      const item = {
+        monitorId: monitor.id,
+        monitorName: monitor.name,
+        rawModel: model.rawModel,
+        standardModel,
+        rate,
+        samples: Math.max(monitor.timeline.length, 1),
+        firstCheckedAt: monitor.timeline[0]?.checkedAt || collectedAt,
+        lastCheckedAt: monitor.timeline.at(-1)?.checkedAt || collectedAt,
+        latestLatencyMs: model.latestLatencyMs,
+        avgLatency7dMs: model.avgLatency7dMs,
+        timeline: isPrimary ? monitor.timeline : [],
+      };
+      byStandardModel.set(standardModel, [...(byStandardModel.get(standardModel) || []), item]);
+    }
+  }
+
+  return new Map(Array.from(byStandardModel.entries()).map(([standardModel, items]) => [
+    standardModel,
+    {
+      ...summarizeMonitorEvidence(items, collectedAt),
+      standardModel,
+      monitorIds: uniqueText(items.map((item) => item.monitorId)),
+      rawModels: uniqueText(items.map((item) => item.rawModel)),
+      timelines: items.flatMap((item) => item.timeline.map((sample) => ({
+        ...sample,
+        monitorId: item.monitorId,
+      }))),
+    },
+  ]));
+}
+
+function summarizeMonitorEvidence(items, collectedAt) {
+  const samples = items.reduce((total, item) => total + item.samples, 0);
+  const weightedRate = samples
+    ? items.reduce((total, item) => total + item.rate * item.samples, 0) / samples
+    : null;
+  return {
+    rate: weightedRate === null ? null : round(weightedRate, 6),
+    samples,
+    firstCheckedAt: minTimestamp(items.map((item) => item.firstCheckedAt)) || collectedAt,
+    lastCheckedAt: maxTimestamp(items.map((item) => item.lastCheckedAt)) || collectedAt,
+    latestLatencyMs: averageInteger(items.map((item) => item.latestLatencyMs)),
+    avgLatency7dMs: weightedAverageInteger(items, "avgLatency7dMs"),
+  };
+}
+
+function monitorAvailabilityFields(source, evidence, sourceUrl) {
+  return {
+    availability_seven_day_rate: evidence.rate,
+    availability_seven_day_samples: evidence.samples,
+    availability_first_checked_at: evidence.firstCheckedAt,
+    availability_last_checked_at: evidence.lastCheckedAt,
+    availability_latest_latency_ms: evidence.latestLatencyMs,
+    availability_avg_latency_7d_ms: evidence.avgLatency7dMs,
+    availability_note:
+      `Sub2API 站方 /monitor 同模型监测：${evidence.rawModels.join("、")}；` +
+      `非 PriceAI 独立实测。`,
+    availability_source_type: STATION_MONITOR_SOURCE_TYPE,
+    availability_source_label: STATION_MONITOR_SOURCE_LABEL,
+    availability_source_url: sourceUrl,
+    availability_scope: "model",
+    availability_match_level: "model",
+    monitoring_scope_id: `sub2api-monitor:${source.id}:${evidence.standardModel}`,
+  };
+}
+
+function buildChannelMonitorAvailabilitySamples(source, monitors, modelEvidence, collectedAt, runId, sourceUrl) {
+  const samples = [];
+  for (const monitor of monitors) {
+    const timeline = monitor.timeline.length
+      ? monitor.timeline
+      : [{
+          ok: isOperationalMonitorStatus(monitor.primaryStatus),
+          checkedAt: collectedAt,
+          latencyMs: monitor.primaryLatencyMs,
+          pingLatencyMs: monitor.primaryPingLatencyMs,
+        }];
+    for (const sample of timeline) {
+      samples.push({
+        id: stableId("sub2api-station-monitor-sample", source.id, monitor.id, sample.checkedAt),
+        run_id: runId,
+        station_id: source.id,
+        scope: "station",
+        standard_model: null,
+        group_name: null,
+        ok: Boolean(sample.ok),
+        checked_at: sample.checkedAt,
+        latency_ms: sample.latencyMs,
+        ping_latency_ms: sample.pingLatencyMs,
+        source_type: STATION_MONITOR_SOURCE_TYPE,
+        source_label: STATION_MONITOR_SOURCE_LABEL,
+        source_url: sourceUrl,
+        created_at: collectedAt,
+      });
+    }
+  }
+
+  for (const evidence of modelEvidence.values()) {
+    for (const sample of evidence.timelines) {
+      samples.push({
+        id: stableId(
+          "sub2api-offer-monitor-sample",
+          source.id,
+          evidence.standardModel,
+          sample.monitorId,
+          sample.checkedAt,
+        ),
+        run_id: runId,
+        station_id: source.id,
+        scope: "offer",
+        standard_model: evidence.standardModel,
+        group_name: "",
+        ok: Boolean(sample.ok),
+        checked_at: sample.checkedAt,
+        latency_ms: sample.latencyMs,
+        ping_latency_ms: sample.pingLatencyMs,
+        source_type: STATION_MONITOR_SOURCE_TYPE,
+        source_label: STATION_MONITOR_SOURCE_LABEL,
+        source_url: sourceUrl,
+        created_at: collectedAt,
+      });
+    }
+  }
+
+  return Array.from(new Map(samples.map((sample) => [sample.id, sample])).values());
+}
+
+function standardModelFromMonitorModel(rawModel) {
+  const matched = standardModelsFromAvailableModels([rawModel])[0];
+  if (matched) return matched.standardModel;
+  const normalized = normalizeModelId(rawModel).replace(/\s+/g, "-");
+  if (/^(?:gpt-?)?5-?5(?:$|-)/.test(normalized)) return "GPT 5.5";
+  if (/^(?:gpt-?)?5-?4-mini(?:$|-)/.test(normalized)) return "GPT 5.4 Mini";
+  if (/^(?:gpt-?)?5-?4(?:$|-)/.test(normalized)) return "GPT 5.4";
+  return null;
 }
 
 async function buildCredentialRows(source, selectedTargets, keyResults, collectedAt, options) {
@@ -794,6 +1530,8 @@ async function buildCredentialRows(source, selectedTargets, keyResults, collecte
       credentialStatus: "ready",
       credentialType,
       stationId: source.id,
+      has_api_key: true,
+      has_test_account: false,
       allowed_models: [selected.plan.standardModel, selected.plan.rawModelName],
       allowed_groups: [groupName, String(result.group.id)],
       group_name: groupName,
@@ -1211,6 +1949,29 @@ function selectTargetGroups(groups) {
   }));
 }
 
+function selectMonitorKeyTarget(groups) {
+  const group = groups
+    .filter(
+      (item) =>
+        item.id !== null &&
+        typeof item.multiplier === "number" &&
+        Number.isFinite(item.multiplier),
+    )
+    .sort(compareGroupsForPrice)[0];
+  if (!group) return [];
+
+  const model = representativeModelForGroup(group);
+  return [{
+    plan: {
+      id: "monitor",
+      family: model.family,
+      standardModel: model.standardModel,
+      rawModelName: model.rawModelName,
+    },
+    group,
+  }];
+}
+
 function selectGroupForPlan(groups, plan) {
   if (plan.groupSelector === "openai_general") {
     return groups
@@ -1251,13 +2012,23 @@ function compareGroupsForPrice(left, right) {
   return nullableSortValue(left.multiplier) - nullableSortValue(right.multiplier) || String(left.name).localeCompare(String(right.name));
 }
 
-function normalizeGroup(group) {
+function normalizeGroup(group, ratesById = new Map()) {
+  const id = numberValue(group.id);
+  const accountMultiplier = id === null ? null : ratesById.get(Number(id)) ?? null;
   return {
-    id: numberValue(group.id),
+    id,
     name: String(group.name || group.display_name || group.group_name || "").trim(),
     description: String(group.description || "").trim(),
     platform: String(group.platform || "").trim().toLowerCase(),
-    multiplier: numberValue(group.rate_multiplier ?? group.multiplier ?? group.rate ?? group.group_ratio),
+    multiplier:
+      accountMultiplier ??
+      numberValue(
+        group.user_rate_multiplier ??
+        group.rate_multiplier ??
+        group.multiplier ??
+        group.rate ??
+        group.group_ratio,
+      ),
     status: String(group.status || "unknown"),
     updatedAt: group.updated_at ? String(group.updated_at) : null,
   };
@@ -1331,6 +2102,7 @@ async function postRows(rows, options) {
     credentials: rows.credentials?.length || 0,
     offers: rows.offers.length,
     runs: rows.runs.length,
+    availabilitySamples: rows.availabilitySamples?.length || 0,
     publish: Boolean(options.publish),
   };
 
@@ -1362,6 +2134,7 @@ async function postRows(rows, options) {
   await upsertRows(supabase, "api_transit_offers", offers, { onConflict: "station_id,standard_model,group_name" });
   await deactivateOffersById(supabase, staleOfferIds);
   await upsertRows(supabase, "api_transit_detection_runs", rows.runs, { onConflict: "id" });
+  await upsertRows(supabase, "api_transit_availability_samples", rows.availabilitySamples || [], { onConflict: "id" });
 
   return {
     ...plan,
@@ -1584,10 +2357,24 @@ async function upsertRows(supabase, table, rows, options = {}) {
   for (const chunk of chunks(rows, 300)) {
     if (!chunk.length) continue;
     const { error } = await supabase.from(table).upsert(chunk, options);
-    if (error && isMissingColumnError(error, "availability_first_checked_at")) {
+    const compatibilityFields = ["api_transit_stations", "api_transit_offers"].includes(table)
+      ? [
+          "availability_first_checked_at",
+          "availability_latest_latency_ms",
+          "availability_avg_latency_7d_ms",
+          "availability_source_type",
+          "availability_source_label",
+          "availability_source_url",
+          "availability_scope",
+          "availability_match_level",
+          "monitoring_scope_id",
+        ]
+      : [];
+    const missingCompatibilityField = compatibilityFields.find((field) => isMissingColumnError(error, field));
+    if (error && missingCompatibilityField) {
       const { error: fallbackError } = await supabase
         .from(table)
-        .upsert(removeFieldsFromRows(chunk, ["availability_first_checked_at"]), options);
+        .upsert(removeFieldsFromRows(chunk, compatibilityFields), options);
       if (!fallbackError) continue;
       fallbackError.table = table;
       throw fallbackError;
@@ -1663,14 +2450,18 @@ async function decryptCredentialPayload(encryptedPayload, secret) {
 
 function credentialEncryptionSecret(options) {
   const env = readEnvFile(envPath);
-  const secret =
+  const dedicatedSecret =
     options.credentialEncryptionKey ||
     options["credential-encryption-key"] ||
     process.env.API_TRANSIT_CREDENTIAL_ENCRYPTION_KEY ||
     env.API_TRANSIT_CREDENTIAL_ENCRYPTION_KEY;
+  const adminSecret = process.env.ADMIN_SESSION_SECRET || env.ADMIN_SESSION_SECRET;
+  const secret =
+    dedicatedSecret ||
+    (adminSecret ? `priceai:api-transit-credentials:v1:${adminSecret}` : "");
   if (!secret || String(secret).length < 32) {
     if (options.dryRun) return "dry-run-api-transit-credential-key-00000000";
-    throw new Error("写入测试凭据需要配置 API_TRANSIT_CREDENTIAL_ENCRYPTION_KEY。");
+    throw new Error("写入测试凭据需要配置 API_TRANSIT_CREDENTIAL_ENCRYPTION_KEY 或 ADMIN_SESSION_SECRET。");
   }
   return String(secret);
 }
@@ -1796,6 +2587,8 @@ function parseArgs(values) {
 }
 
 function normalizeOptions(options) {
+  const monitorKeyOnly = truthyOption(options.monitorKeyOnly ?? options["monitor-key-only"]);
+  const monitorOnly = truthyOption(options.monitorOnly ?? options["monitor-only"]);
   return {
     ...options,
     url: options.url || options.websiteUrl,
@@ -1809,8 +2602,14 @@ function normalizeOptions(options) {
     publish: truthyOption(options.publish),
     verbose: truthyOption(options.verbose),
     ensureKeys: truthyOption(options.ensureKeys ?? options["ensure-keys"]),
-    postCredentials: truthyOption(options.postCredentials ?? options["post-credentials"]),
+    postCredentials:
+      monitorKeyOnly ||
+      truthyOption(options.postCredentials ?? options["post-credentials"]),
+    monitorKeyOnly,
+    monitorOnly,
     saveAccountCredential: truthyOption(options.saveAccountCredential ?? options["save-account-credential"]),
+    register: truthyOption(options.register),
+    registerEmail: options.registerEmail || options["register-email"],
     timeoutMs: Number(options.timeoutMs || options["timeout-ms"] || DEFAULT_TIMEOUT_MS),
   };
 }
@@ -1901,6 +2700,40 @@ function numberValue(value) {
   return null;
 }
 
+function positiveInteger(value) {
+  const parsed = numberValue(value);
+  return parsed === null || parsed < 0 ? null : Math.round(parsed);
+}
+
+function nullableTimestamp(value) {
+  if (!value) return null;
+  const timestamp = new Date(value);
+  return Number.isFinite(timestamp.getTime()) ? timestamp.toISOString() : null;
+}
+
+function minTimestamp(values) {
+  return uniqueText(values).sort()[0] || null;
+}
+
+function maxTimestamp(values) {
+  return uniqueText(values).sort().at(-1) || null;
+}
+
+function averageInteger(values) {
+  const numbers = values.filter((value) => typeof value === "number" && Number.isFinite(value));
+  if (!numbers.length) return null;
+  return Math.round(numbers.reduce((total, value) => total + value, 0) / numbers.length);
+}
+
+function weightedAverageInteger(items, field) {
+  const values = items.filter(
+    (item) => typeof item[field] === "number" && Number.isFinite(item[field]) && item.samples > 0,
+  );
+  const samples = values.reduce((total, item) => total + item.samples, 0);
+  if (!samples) return null;
+  return Math.round(values.reduce((total, item) => total + item[field] * item.samples, 0) / samples);
+}
+
 function nullableSortValue(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : Number.POSITIVE_INFINITY;
 }
@@ -1942,7 +2775,9 @@ function printSummary(result) {
     [
       "Sub2API transit import.",
       `station=${result.station.id}`,
+      `account=${result.accountAction}`,
       `groups=${result.counts.groups}`,
+      `channelMonitors=${result.counts.channelMonitors || 0}`,
       `createdKeys=${result.counts.createdKeys}`,
       `credentials=${result.counts.credentials}`,
       `targets=${result.counts.successfulTargets}/${result.counts.targets}`,
@@ -1965,10 +2800,17 @@ function errorMessage(error) {
 }
 
 export const __test = {
+  applyChannelMonitorSnapshot,
   apiTransitOfferStatusForProbeResult,
   buildOfferRows,
+  groupRateRows,
   modelsForProbeResult,
+  normalizeChannelMonitor,
+  normalizeMonitorPercent,
+  normalizeGroup,
   representativeModelForGroup,
   selectGroupForPlan,
+  selectMonitorKeyTarget,
   standardModelsFromAvailableModels,
+  standardModelFromMonitorModel,
 };

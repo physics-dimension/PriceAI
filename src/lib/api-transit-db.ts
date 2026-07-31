@@ -1168,6 +1168,17 @@ function getRecentAvailabilitySamplesForScope(
   sourceType: TransitAvailabilitySourceType,
   options: RecentAvailabilitySampleOptions = {}
 ): TransitAvailability["recentSamples"] {
+  if (sourceType === "station_monitor") {
+    const stationMonitorSamples = getRecentAvailabilitySamplesBySource(
+      samplesByKey,
+      stationId,
+      scope,
+      standardModel,
+      groupName,
+      "station_monitor"
+    );
+    if (stationMonitorSamples?.length) return stationMonitorSamples;
+  }
   const publicStatusSamples = getRecentAvailabilitySamplesBySource(
     samplesByKey,
     stationId,
@@ -1698,6 +1709,7 @@ function shouldPreferPublicStatusSamples(
   source: { type: TransitAvailabilitySourceType; url: string | null }
 ): boolean {
   return (
+    source.type === "station_monitor" ||
     source.type === "public_status" ||
     isPublicMonitorAvailabilityUrl(source.url) ||
     isPublicMonitorAvailabilityUrl(nullableString(enhancement.monitor_url)) ||
@@ -1709,7 +1721,11 @@ function shouldPreferPublicStatusSamples(
 function shouldPreferPublicStatusAvailability(
   availability: Pick<TransitAvailability, "sourceType" | "sourceUrl">
 ): boolean {
-  return availability.sourceType === "public_status" || isPublicMonitorAvailabilityUrl(availability.sourceUrl);
+  return (
+    availability.sourceType === "station_monitor" ||
+    availability.sourceType === "public_status" ||
+    isPublicMonitorAvailabilityUrl(availability.sourceUrl)
+  );
 }
 
 function isPublicSiteInfoAvailability(row: DbRow): boolean {
@@ -1737,6 +1753,7 @@ function isPublicMonitorAvailabilityUrl(value: string | null | undefined): boole
 function isTransitAvailabilitySourceType(value: string): value is TransitAvailabilitySourceType {
   return (
     value === "priceai_probe" ||
+    value === "station_monitor" ||
     value === "public_status" ||
     value === "public_model_catalog" ||
     value === "partner_api" ||

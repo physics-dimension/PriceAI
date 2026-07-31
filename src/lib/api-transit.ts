@@ -674,6 +674,8 @@ export function getStandardModelAvailabilitySourceMeta(
 
 function availabilitySourcePriority(sourceType: TransitModelPrice["availability"]["sourceType"]): number {
   switch (sourceType) {
+    case "station_monitor":
+      return 6;
     case "public_status":
       return 6;
     case "priceai_probe":
@@ -695,7 +697,10 @@ export function getTransitPriceAvailabilitySource(
   station: TransitStation,
   price: TransitModelPrice
 ): Pick<TransitAvailability, "sourceType" | "sourceLabel" | "sourceUrl"> {
-  if (price.availability.sourceType === "public_status") {
+  if (
+    price.availability.sourceType === "station_monitor" ||
+    price.availability.sourceType === "public_status"
+  ) {
     return {
       sourceType: price.availability.sourceType,
       sourceLabel: price.availability.sourceLabel,
@@ -705,9 +710,14 @@ export function getTransitPriceAvailabilitySource(
 
   const publicMonitorUrl = publicMonitorAvailabilityUrl(station);
   if (publicMonitorUrl) {
+    const stationMonitor = station.availability.sourceType === "station_monitor";
     return {
-      sourceType: "public_status",
-      sourceLabel: station.availability.sourceType === "public_status" ? station.availability.sourceLabel : "公开监测页",
+      sourceType: stationMonitor ? "station_monitor" : "public_status",
+      sourceLabel: stationMonitor
+        ? station.availability.sourceLabel || "Sub2API 站方监测"
+        : station.availability.sourceType === "public_status"
+          ? station.availability.sourceLabel
+          : "公开监测页",
       sourceUrl: publicMonitorUrl,
     };
   }
@@ -1485,6 +1495,17 @@ function getStationPublishedAvailabilitySourceMeta(station: TransitStation): Pic
   TransitAvailability,
   "sourceType" | "sourceLabel" | "sourceUrl"
 > {
+  const stationMonitorPrice = station.prices.find(
+    (item) => item.availability.sourceType === "station_monitor" && item.availability.sevenDaySamples > 0
+  );
+  if (stationMonitorPrice) {
+    return {
+      sourceType: stationMonitorPrice.availability.sourceType,
+      sourceLabel: stationMonitorPrice.availability.sourceLabel,
+      sourceUrl: stationMonitorPrice.availability.sourceUrl,
+    };
+  }
+
   const publicStatusPrice = station.prices.find(
     (item) => item.availability.sourceType === "public_status" && item.availability.sevenDaySamples > 0
   );
@@ -1498,9 +1519,14 @@ function getStationPublishedAvailabilitySourceMeta(station: TransitStation): Pic
 
   const publicMonitorUrl = publicMonitorAvailabilityUrl(station);
   if (publicMonitorUrl) {
+    const stationMonitor = station.availability.sourceType === "station_monitor";
     return {
-      sourceType: "public_status",
-      sourceLabel: station.availability.sourceType === "public_status" ? station.availability.sourceLabel : "公开监测页",
+      sourceType: stationMonitor ? "station_monitor" : "public_status",
+      sourceLabel: stationMonitor
+        ? station.availability.sourceLabel || "Sub2API 站方监测"
+        : station.availability.sourceType === "public_status"
+          ? station.availability.sourceLabel
+          : "公开监测页",
       sourceUrl: publicMonitorUrl,
     };
   }
@@ -1527,6 +1553,9 @@ function getStationPublishedAvailabilitySourceMeta(station: TransitStation): Pic
 }
 
 function publicMonitorAvailabilityUrl(station: TransitStation): string | null {
+  if (station.availability.sourceType === "station_monitor" && station.availability.sourceUrl) {
+    return station.availability.sourceUrl;
+  }
   if (station.availability.sourceType === "public_status" && station.availability.sourceUrl) {
     return station.availability.sourceUrl;
   }
@@ -2942,6 +2971,15 @@ export function getAvailabilitySourceMeta(
         title: explicitLabel
           ? `PriceAI 使用测试 API Key 发起真实模型请求后汇总的可用性样本。原始来源：${explicitLabel}`
           : "PriceAI 使用测试 API Key 发起真实模型请求后汇总的可用性样本。",
+        url: availability.sourceUrl,
+      };
+    case "station_monitor":
+      return {
+        label: "站方监测",
+        tone: "info",
+        title: explicitLabel
+          ? `来自站点自身的渠道监测，非 PriceAI 独立实测。原始来源：${explicitLabel}`
+          : "来自站点自身的渠道监测，非 PriceAI 独立实测。",
         url: availability.sourceUrl,
       };
     case "public_status":

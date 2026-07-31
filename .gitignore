@@ -60,6 +60,10 @@ yarn-error.log*
 .env*
 !.env.example
 
+# local self-hosted Supabase runtime and CLI
+/.local-supabase/
+/.tools/
+
 # vercel
 .vercel
 

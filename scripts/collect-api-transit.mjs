@@ -28,6 +28,8 @@ const CALLAI_PARTNER_STATUS_COLLECTORS = new Set([
   "subway_api_partner_status",
 ]);
 const ONEHOP_PUBLIC_MODEL_COLLECTORS = new Set(["onehop_public_models"]);
+const SUB2API_MODEL_PLAZA_COLLECTORS = new Set(["sub2api_model_plaza"]);
+const SUB2API_PUBLIC_PROFILE_COLLECTORS = new Set(["sub2api_public_profile"]);
 const APINODE_PUBLIC_SITE_INFO_COLLECTORS = new Set(["apinode_public_site_info", "sub2api_public_site_info"]);
 const ZIVV_MODEL_HUB_COLLECTORS = new Set(["zivv_model_hub"]);
 const AI_TRANSIT_SNAPSHOT_COLLECTORS = new Set(["ai_transit_snapshot"]);
@@ -257,6 +259,7 @@ export async function collectApiTransitPrices(options = {}) {
       const sourceOptions = withSourceOptions(options, source);
       const payload = await fetchPricingJson(source, sourceOptions);
       const parsed = parsePricingPayload(source, payload, runStartedAt);
+      const sourceCollectionSucceeded = parsed.offers.length > 0 || parsed.profileOnly === true;
       let availabilityPayload = null;
       let availabilityError = null;
       try {
@@ -273,10 +276,10 @@ export async function collectApiTransitPrices(options = {}) {
         id: runId,
         station_id: source.id,
         run_type: "public_pricing",
-        status: parsed.offers.length ? "success" : "partial",
+        status: sourceCollectionSucceeded ? "success" : "partial",
         model_count: parsed.modelCount,
         offer_count: parsed.offers.length,
-        error_message: parsed.offers.length ? null : parsed.collectionError || "未识别到已支持的标准模型。",
+        error_message: sourceCollectionSucceeded ? null : parsed.collectionError || "未识别到已支持的标准模型。",
         source_url: source.pricingEndpointUrl,
         started_at: runStartedAt,
         finished_at: new Date().toISOString(),
@@ -512,6 +515,12 @@ function parsePricingPayload(source, payload, collectedAt) {
   if (isOneHopPublicModelsSource(source)) {
     return parseOneHopPublicModelsPayload(source, payload, collectedAt);
   }
+  if (isSub2ApiPublicProfileSource(source)) {
+    return parseSub2ApiPublicProfilePayload(source, payload, collectedAt);
+  }
+  if (isSub2ApiModelPlazaSource(source)) {
+    return parseSub2ApiModelPlazaPayload(source, payload, collectedAt);
+  }
   if (isApinodePublicSiteInfoSource(source)) {
     return parseApinodePublicSiteInfoPayload(source, payload, collectedAt);
   }
@@ -578,6 +587,224 @@ function parseOneHopPublicModelsPayload(source, payload, collectedAt) {
       availability: summarizeOneHopStationAvailability(deduped, collectedAt),
     }),
     offers: deduped,
+  };
+}
+
+function parseSub2ApiModelPlazaPayload(source, payload, collectedAt) {
+  const data = payload?.data && typeof payload.data === "object" ? payload.data : payload;
+  const groups = Array.isArray(data?.groups) ? data.groups : [];
+  const offers = [];
+  let modelCount = 0;
+
+  for (const group of groups) {
+    if (!group || typeof group !== "object") continue;
+    const models = Array.isArray(group.models) ? group.models : [];
+    modelCount += models.length;
+
+    for (const model of models) {
+      const standard = standardizeModelName([model?.name, model?.platform, group?.platform].filter(Boolean).join(" "));
+      if (!standard) continue;
+      const offer = buildSub2ApiModelPlazaOfferRow(source, group, model, standard, collectedAt);
+      if (offer) offers.push(offer);
+    }
+  }
+
+  const deduped = dedupeBestOffers(offers);
+  const collectionError = deduped.length
+    ? null
+    : "Sub2API 模型广场未返回可识别的 PriceAI 标准模型倍率。";
+  return {
+    modelCount,
+    collectionError,
+    station: buildStationRow(source, collectedAt, {
+      status: deduped.length ? "success" : "partial",
+      offerCount: deduped.length,
+      collectionError,
+      availability: {
+        rate: null,
+        samples: 0,
+        firstCheckedAt: null,
+        lastCheckedAt: collectedAt,
+        note: "Sub2API 公开模型广场价格已抓取；尚未使用 PriceAI API Key 验证真实扣费和可用性。",
+        ...availabilitySourceFields(source, AVAILABILITY_SOURCES.publicModelCatalog),
+      },
+    }),
+    offers: deduped,
+  };
+}
+
+function parseSub2ApiPublicProfilePayload(source, payload, collectedAt) {
+  const data = payload?.data && typeof payload.data === "object" ? payload.data : null;
+  if (!data) {
+    return {
+      modelCount: 0,
+      collectionError: "Sub2API 公开设置接口没有返回有效 data。",
+      station: buildStationRow(source, collectedAt, {
+        status: "partial",
+        offerCount: 0,
+        collectionError: "Sub2API 公开设置接口没有返回有效 data。",
+      }),
+      offers: [],
+      profileOnly: false,
+    };
+  }
+
+  const publicSiteName = stringOrNull(data.site_name);
+  const configuredName = stringOrNull(source.name) || source.id;
+  const resolvedName = publicSiteName && publicSiteName.toLowerCase() !== "sub2api"
+    ? publicSiteName
+    : configuredName;
+  const registrationEnabled = data.registration_enabled === true;
+  const paymentEnabled = data.payment_enabled === true;
+  const invitationRequired = data.invitation_code_enabled === true;
+  const publicApiBaseUrl = stringOrNull(data.api_base_url);
+  const apiBaseUrl = publicApiBaseUrl && /^https?:\/\//i.test(publicApiBaseUrl)
+    ? publicApiBaseUrl
+    : source.apiBaseUrl;
+  const registrationText = registrationEnabled
+    ? invitationRequired ? "开放邀请制注册" : "开放公开注册"
+    : "当前关闭公开注册";
+  const paymentText = paymentEnabled ? "公开设置显示站内支付已启用" : "公开设置未启用站内支付";
+  const version = stringOrNull(data.version);
+  const profileSource = {
+    ...source,
+    name: resolvedName,
+    apiBaseUrl,
+    summary:
+      source.summary ||
+      `${resolvedName} 使用 Sub2API，公开站点资料接口在线；${registrationText}，${paymentText}。当前未发现无需登录的结构化价格接口，因此本页独立记录站点资料但不混入其他商家的倍率。`,
+    strengths: source.strengths || [
+      "公开 /health、/setup/status 和 /api/v1/settings/public 指纹可用于独立识别 Sub2API 实例。",
+      registrationEnabled ? "公开设置显示当前可注册。" : "站点仍在线，可持续监测公开注册状态变化。",
+    ],
+    cautions: source.cautions || [
+      registrationEnabled
+        ? "开放注册不代表 PriceAI 已验证真实扣费、退款或售后能力。"
+        : "当前关闭公开注册，可能是私用、内部部署或暂停营业，不应视为可直接购买商家。",
+      "暂无公开结构化价格接口，页面不会展示或借用其他中转站的倍率。",
+    ],
+    adminNote:
+      source.adminNote ||
+      `公开网络发现；Sub2API 公开设置核验成功，${registrationText}，payment_enabled=${paymentEnabled}${version ? `，version=${version}` : ""}。暂无公开模型广场或 ai-transit 价格快照。`,
+  };
+  const station = buildStationRow(profileSource, collectedAt, {
+    status: "success",
+    offerCount: 0,
+    availability: {
+      rate: null,
+      samples: 0,
+      firstCheckedAt: null,
+      lastCheckedAt: collectedAt,
+      note: "Sub2API 公开站点资料接口在线；暂无公开价格和 PriceAI API Key 可用性样本。",
+      ...availabilitySourceFields(source, AVAILABILITY_SOURCES.publicModelCatalog),
+    },
+  });
+
+  return {
+    modelCount: 0,
+    collectionError: null,
+    station: {
+      ...station,
+      usage_advice: registrationEnabled ? station.usage_advice : "pending",
+    },
+    offers: [],
+    profileOnly: true,
+  };
+}
+
+function buildSub2ApiModelPlazaOfferRow(source, group, model, standard, collectedAt) {
+  const groupMultiplier = numberValue(group?.rate_multiplier);
+  const pricing = model?.pricing && typeof model.pricing === "object" ? model.pricing : null;
+  const billingMode = normalizeBillingMode(pricing?.billing_mode);
+  if (groupMultiplier === null || groupMultiplier <= 0 || !pricing || billingMode !== "token") return null;
+
+  const input = sub2ApiModelPlazaMetricRate(pricing.input_price, groupMultiplier);
+  const output = sub2ApiModelPlazaMetricRate(pricing.output_price, groupMultiplier);
+  const cacheRead = sub2ApiModelPlazaMetricRate(pricing.cache_read_price, groupMultiplier);
+  const cacheWrite = sub2ApiModelPlazaMetricRate(pricing.cache_write_price, groupMultiplier);
+  const imageOutput = sub2ApiModelPlazaMetricRate(pricing.image_output_price, groupMultiplier);
+  if ([input, output, cacheRead, cacheWrite, imageOutput].every((value) => value === null)) return null;
+
+  const groupName = stringOrNull(group?.name) || `group-${group?.id || "default"}`;
+  const sourceText = [
+    groupName,
+    group?.description,
+    group?.platform,
+    group?.subscription_type,
+    model?.platform,
+  ].filter(Boolean).join(" ");
+  const autoPublish = shouldAutoPublishSource(source);
+
+  return {
+    id: stableId("api-transit-offer", source.id, standard, groupName),
+    station_id: source.id,
+    family: familyForStandardModel(standard),
+    standard_model: standard,
+    raw_model_name: String(model?.name || standard),
+    group_name: groupName,
+    recharge_ratio: source.rechargeRatio || DEFAULT_RECHARGE_RATIO,
+    billing_mode: "token",
+    model_multiplier: round(groupMultiplier, 6),
+    input_price: input === null ? null : round(input, 6),
+    output_price: output === null ? null : round(output, 6),
+    cache_read_price: cacheRead === null ? null : round(cacheRead, 6),
+    cache_write_price: cacheWrite === null ? null : round(cacheWrite, 6),
+    cache_hit_rate: null,
+    cache_hit_sample_tokens: 0,
+    image_output_price: imageOutput === null ? null : round(imageOutput, 6),
+    fixed_price: null,
+    fixed_price_currency: "CNY",
+    fixed_price_unit: null,
+    fixed_price_tiers: [],
+    currency: "CNY",
+    account_pool: inferAccountPool(sourceText),
+    channel_type: inferChannelType(sourceText),
+    price_source: "Sub2API 公开模型广场",
+    source_url: source.pricingUrl || source.pricingEndpointUrl,
+    availability_seven_day_rate: null,
+    availability_seven_day_samples: 0,
+    availability_first_checked_at: null,
+    availability_last_checked_at: collectedAt,
+    availability_note: "Sub2API 公开模型广场价格已抓取；尚未使用 PriceAI API Key 验证真实扣费和可用性。",
+    ...availabilitySourceFields(source, AVAILABILITY_SOURCES.publicModelCatalog),
+    last_verified_at: collectedAt,
+    status: autoPublish ? "active" : "needs_review",
+    auto_publish: autoPublish,
+    raw_payload: {
+      collector_kind: source.collectorKind,
+      group: compactSub2ApiModelPlazaGroup(group),
+      model: {
+        name: stringOrNull(model?.name),
+        platform: stringOrNull(model?.platform),
+        pricing,
+        official_pricing: model?.official_pricing || null,
+      },
+      multiplier_basis: "sub2api_model_plaza_group_rate_multiplier",
+    },
+    created_at: collectedAt,
+  };
+}
+
+function sub2ApiModelPlazaMetricRate(value, groupMultiplier) {
+  const price = numberValue(value);
+  if (price === null) return null;
+  return price === 0 ? 0 : groupMultiplier;
+}
+
+function compactSub2ApiModelPlazaGroup(group) {
+  return {
+    id: numberValue(group?.id),
+    name: stringOrNull(group?.name),
+    description: stringOrNull(group?.description),
+    platform: stringOrNull(group?.platform),
+    subscription_type: stringOrNull(group?.subscription_type),
+    rate_multiplier: numberValue(group?.rate_multiplier),
+    user_rate_multiplier: numberValue(group?.user_rate_multiplier),
+    peak_rate_enabled: group?.peak_rate_enabled === true,
+    peak_start: stringOrNull(group?.peak_start),
+    peak_end: stringOrNull(group?.peak_end),
+    peak_rate_multiplier: numberValue(group?.peak_rate_multiplier),
+    is_exclusive: group?.is_exclusive === true,
   };
 }
 
@@ -715,6 +942,14 @@ function isCallaiPartnerStatusSource(source) {
 
 function isOneHopPublicModelsSource(source) {
   return ONEHOP_PUBLIC_MODEL_COLLECTORS.has(source.collectorKind);
+}
+
+function isSub2ApiModelPlazaSource(source) {
+  return SUB2API_MODEL_PLAZA_COLLECTORS.has(source.collectorKind);
+}
+
+function isSub2ApiPublicProfileSource(source) {
+  return SUB2API_PUBLIC_PROFILE_COLLECTORS.has(source.collectorKind);
 }
 
 function isApinodePublicSiteInfoSource(source) {
@@ -3819,6 +4054,9 @@ async function readExistingOffers(supabase, offers) {
       ) {
         return readExistingOffersWithoutLatency(supabase, offers);
       }
+      if (isAvailabilitySourceColumnError(error)) {
+        return readExistingOffersWithoutOptionalAvailability(supabase, offers);
+      }
       throw error;
     }
     for (const row of data || []) byId.set(offerKey(row), row);
@@ -3864,6 +4102,9 @@ async function readExistingOffersWithoutCacheHit(supabase, offers) {
       ) {
         return readExistingOffersWithoutLatency(supabase, offers);
       }
+      if (isAvailabilitySourceColumnError(error)) {
+        return readExistingOffersWithoutOptionalAvailability(supabase, offers);
+      }
       throw error;
     }
     for (const row of data || []) byId.set(offerKey(row), row);
@@ -3901,6 +4142,9 @@ async function readExistingOffersWithoutLatency(supabase, offers) {
       if (isMissingColumnError(error, "availability_first_checked_at")) {
         return readExistingOffersWithoutFirstCheckedAt(supabase, offers);
       }
+      if (isAvailabilitySourceColumnError(error)) {
+        return readExistingOffersWithoutOptionalAvailability(supabase, offers);
+      }
       throw error;
     }
     for (const row of data || []) byId.set(offerKey(row), row);
@@ -3909,6 +4153,10 @@ async function readExistingOffersWithoutLatency(supabase, offers) {
 }
 
 async function readExistingOffersWithoutFirstCheckedAt(supabase, offers) {
+  return readExistingOffersWithoutOptionalAvailability(supabase, offers);
+}
+
+async function readExistingOffersWithoutOptionalAvailability(supabase, offers) {
   const stationIds = uniqueText(offers.map((offer) => offer.station_id)).filter(Boolean);
   const byId = new Map();
   for (const chunk of chunks(stationIds, 100)) {
@@ -4355,7 +4603,9 @@ function shouldRestrictToPublishedStations(options) {
 }
 
 function filterSourcesByPublishedStationIds(sources, publishedStationIds) {
-  return sources.filter((source) => publishedStationIds.has(source.id));
+  return sources.filter(
+    (source) => publishedStationIds.has(source.id) || shouldAutoPublishSource(source),
+  );
 }
 
 async function readPublishedApiTransitStationIds() {
@@ -4692,7 +4942,10 @@ export const __test = {
   parseApinodePublicSiteInfoPayload,
   parseOneHopPublicModelsPayload,
   parsePricingPayload,
+  parseSub2ApiModelPlazaPayload,
+  parseSub2ApiPublicProfilePayload,
   parseZivvModelHubPayload,
+  readExistingOffers,
   selectSources,
   standardizeModelName,
   shouldRestrictToPublishedStations,

@@ -184,7 +184,6 @@ async function saveCrawlLogRun(
       collectionMethod: payload.mode,
       collectorKind: collectorKindFromDetails(payload.details),
       shopCreatedAt: payload.sourceShopCreatedAt || shopCreatedAtFromDetails(payload.details),
-      notes: "由采集日志自动维护。",
     });
     const offers = payload.offers.map((offer) => ({
       ...offer,

@@ -23,6 +23,14 @@ assert.equal(__test.normalizeFamily("nano-banana-pro"), "image");
 assert.equal(__test.normalizeFamily("sora-2-pro"), "video");
 assert.equal(__test.normalizeFamily("happyhorse-1.1-i2v"), "video");
 assert.equal(__test.normalizeFamily("kling-2.5-turbo"), "video");
+assert.equal(
+  __test.credentialEncryptionSecret({ dedicatedSecret: "dedicated-key", adminSecret: "admin-key" }),
+  "dedicated-key",
+);
+assert.equal(
+  __test.credentialEncryptionSecret({ dedicatedSecret: "", adminSecret: "admin-key" }),
+  "priceai:api-transit-credentials:v1:admin-key",
+);
 
 assert.deepEqual(__test.keywordsForStandardModel("Claude Sonnet 5"), ["claude", "sonnet", "5"]);
 assert.deepEqual(__test.keywordsForStandardModel("Claude Fable 5"), ["claude", "fable", "5"]);

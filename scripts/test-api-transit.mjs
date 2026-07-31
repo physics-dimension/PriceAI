@@ -6,9 +6,97 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { __test } from "./collect-api-transit.mjs";
+import { __test as sub2AccountTest } from "./import-sub2api-api-transit.mjs";
 import { COLLECTOR_RUNTIME_SOURCE_FILES } from "./collector-runtime-policy.mjs";
+import { __test as discoveryTest } from "./discover-sub2api-public.mjs";
 
 const collectorRuntimeSources = new Set(COLLECTOR_RUNTIME_SOURCE_FILES);
+
+const accountRateRows = sub2AccountTest.groupRateRows({
+  data: {
+    101: 0.45,
+    102: 0.8,
+  },
+});
+assert.deepEqual(accountRateRows, [
+  { group_id: "101", rate_multiplier: 0.45 },
+  { group_id: "102", rate_multiplier: 0.8 },
+]);
+assert.equal(
+  sub2AccountTest.normalizeGroup(
+    { id: 101, name: "GPT Plus", platform: "openai", rate_multiplier: 1, status: "active" },
+    new Map([[101, 0.45]]),
+  ).multiplier,
+  0.45,
+  "The authenticated /groups/rates multiplier must override the public group multiplier.",
+);
+assert.equal(
+  sub2AccountTest.selectMonitorKeyTarget([
+    { id: 1, name: "standard", platform: "openai", multiplier: 1, status: "active" },
+    { id: 2, name: "economy", platform: "openai", multiplier: 0.25, status: "active" },
+  ])[0]?.group?.id,
+  2,
+  "Monitor-key provisioning must choose the cheapest active group with a usable multiplier.",
+);
+assert.equal(sub2AccountTest.normalizeMonitorPercent(95.65217391304348), 0.9565217391304348);
+assert.equal(sub2AccountTest.normalizeMonitorPercent(0.27803521779425394), 0.0027803521779425394);
+assert.equal(sub2AccountTest.standardModelFromMonitorModel("5.5"), "GPT 5.5");
+assert.equal(sub2AccountTest.standardModelFromMonitorModel("gpt-5.6-sol"), null);
+
+const normalizedSub2ApiMonitor = sub2AccountTest.normalizeChannelMonitor(
+  {
+    id: 9,
+    name: "GPT 渠道",
+    provider: "openai",
+    group_name: "",
+    primary_model: "5.5",
+    primary_status: "error",
+    primary_latency_ms: 120,
+    primary_ping_latency_ms: 20,
+    availability_7d: 50,
+    extra_models: [],
+    timeline: [
+      { status: "operational", latency_ms: 110, ping_latency_ms: 18, checked_at: "2026-07-31T10:00:00.000Z" },
+      { status: "error", latency_ms: 120, ping_latency_ms: 20, checked_at: "2026-07-31T10:10:00.000Z" },
+    ],
+  },
+  {
+    models: [
+      {
+        model: "5.5",
+        latest_status: "error",
+        latest_latency_ms: 120,
+        availability_7d: 50,
+        availability_15d: 60,
+        availability_30d: 70,
+        avg_latency_7d_ms: 115,
+      },
+    ],
+  },
+);
+const monitorStation = { id: "sub2-monitor-test" };
+const monitorOffers = [
+  { id: "gpt-offer", standard_model: "GPT 5.5", raw_model_name: "gpt-5.5", group_name: "GPT" },
+  { id: "claude-offer", standard_model: "Claude Opus 4.8", raw_model_name: "claude-opus-4-8", group_name: "Claude" },
+];
+const appliedSub2ApiMonitor = sub2AccountTest.applyChannelMonitorSnapshot(
+  { id: "sub2-monitor-test", websiteUrl: "https://monitor.example/" },
+  monitorStation,
+  monitorOffers,
+  [normalizedSub2ApiMonitor],
+  "2026-07-31T10:11:00.000Z",
+  "monitor-run",
+);
+assert.equal(monitorStation.availability_source_type, "station_monitor");
+assert.equal(monitorStation.availability_seven_day_rate, 0.5);
+assert.equal(monitorStation.availability_seven_day_samples, 2);
+assert.equal(monitorOffers[0].availability_source_type, "station_monitor");
+assert.equal(monitorOffers[0].availability_scope, "model");
+assert.equal(monitorOffers[0].availability_avg_latency_7d_ms, 115);
+assert.equal(monitorOffers[1].availability_source_type, undefined);
+assert.equal(appliedSub2ApiMonitor.availabilitySamples.length, 4);
+assert.ok(appliedSub2ApiMonitor.availabilitySamples.every((sample) => sample.source_type === "station_monitor"));
+
 for (const sourceFile of COLLECTOR_RUNTIME_SOURCE_FILES.filter((file) => file.endsWith(".mjs"))) {
   const source = readFileSync(new URL(`../${sourceFile}`, import.meta.url), "utf8");
   for (const match of source.matchAll(/from\s+["'](\.\/[^"']+\.mjs)["']/g)) {
@@ -60,6 +148,37 @@ assert.deepEqual(stationUpsertAttempts[1], [{
   name: "Station schema compatibility",
 }]);
 
+const existingOfferSelects = [];
+const legacyExistingOffers = await __test.readExistingOffers({
+  from(table) {
+    assert.equal(table, "api_transit_offers");
+    return {
+      select(columns) {
+        existingOfferSelects.push(columns);
+        return {
+          async in(column, values) {
+            assert.equal(column, "station_id");
+            assert.deepEqual(values, ["legacy-station"]);
+            return existingOfferSelects.length === 1
+              ? {
+                  data: null,
+                  error: {
+                    code: "42703",
+                    message: "column api_transit_offers.availability_source_type does not exist",
+                  },
+                }
+              : { data: [], error: null };
+          },
+        };
+      },
+    };
+  },
+}, [{ station_id: "legacy-station" }]);
+assert.equal(existingOfferSelects.length, 2);
+assert.match(existingOfferSelects[0], /availability_source_type/);
+assert.doesNotMatch(existingOfferSelects[1], /availability_source_type/);
+assert.equal(legacyExistingOffers.size, 0);
+
 const leaseCliSmoke = spawnSync(process.execPath, [fileURLToPath(new URL("./collect-api-transit.mjs", import.meta.url)), "--post", "--source", "__lease_smoke__"], {
   cwd: fileURLToPath(new URL("..", import.meta.url)),
   encoding: "utf8",
@@ -75,6 +194,120 @@ assert.doesNotMatch(leaseCliOutput, /ReferenceError:\s*env is not defined/, "CLI
 assert.match(leaseCliOutput, /fetch failed|ECONNREFUSED|bad port/i, "Lease smoke must reach the Supabase client without touching a real project.");
 
 const transitSourceConfig = JSON.parse(readFileSync(new URL("../config/api-transit-sources.json", import.meta.url), "utf8"));
+const configuredSub2ApiModelPlazaSource = transitSourceConfig.find((source) => source.id === "apisub22-ylxz-ln-cn");
+assert.ok(configuredSub2ApiModelPlazaSource, "The discovered Sub2API public model plaza must stay in collection sources.");
+assert.equal(configuredSub2ApiModelPlazaSource.collectorKind, "sub2api_model_plaza");
+assert.equal(
+  configuredSub2ApiModelPlazaSource.pricingEndpointUrl,
+  "https://apisub22.ylxz.ln.cn/api/v1/model-plaza",
+);
+assert.equal(configuredSub2ApiModelPlazaSource.stationSystem, "sub_to_api");
+assert.equal(configuredSub2ApiModelPlazaSource.autoPublish, true);
+const configuredSub2ApiModelPlazaSources = transitSourceConfig.filter(
+  (source) => source.collectorKind === "sub2api_model_plaza",
+);
+assert.equal(configuredSub2ApiModelPlazaSources.length, 3);
+const configuredXunmaiSource = configuredSub2ApiModelPlazaSources.find(
+  (source) => source.id === "api-xunmaicloud-com",
+);
+assert.ok(configuredXunmaiSource, "XM-Sub2API public model plaza must stay in collection sources.");
+assert.equal(
+  configuredXunmaiSource.pricingEndpointUrl,
+  "https://api.xunmaicloud.com/api/v1/model-plaza",
+);
+assert.equal(configuredXunmaiSource.autoPublish, true);
+const configuredHetuneSource = configuredSub2ApiModelPlazaSources.find(
+  (source) => source.id === "hetune-top",
+);
+assert.ok(configuredHetuneSource, "Hetune public model plaza must stay in collection sources.");
+assert.equal(
+  configuredHetuneSource.pricingEndpointUrl,
+  "https://hetune.top/api/v1/model-plaza",
+);
+assert.equal(configuredHetuneSource.autoPublish, true);
+const configuredSub2ApiPublicProfileSources = transitSourceConfig.filter(
+  (source) => source.collectorKind === "sub2api_public_profile",
+);
+assert.equal(
+  configuredSub2ApiPublicProfileSources.length,
+  46,
+  "Each discovered Sub2API instance without public pricing must stay as its own station source.",
+);
+assert.equal(
+  new Set(configuredSub2ApiPublicProfileSources.map((source) => source.id)).size,
+  configuredSub2ApiPublicProfileSources.length,
+  "Sub2API public profile sources must have unique station IDs.",
+);
+assert.equal(
+  new Set(configuredSub2ApiPublicProfileSources.map((source) => source.pricingEndpointUrl)).size,
+  configuredSub2ApiPublicProfileSources.length,
+  "Sub2API public profile sources must not share a profile endpoint.",
+);
+assert.ok(
+  configuredSub2ApiPublicProfileSources.every(
+    (source) => source.stationSystem === "sub_to_api" && source.autoPublish === true,
+  ),
+  "Every discovered Sub2API public profile must publish as an independent Sub2API station.",
+);
+assert.deepEqual(
+  discoveryTest.modelPlazaStats({
+    data: {
+      groups: [
+        {
+          name: "public-a",
+          rate_multiplier: 0.55,
+          models: [{ name: "gpt-5.4" }, { name: "gpt-5.5" }],
+        },
+        {
+          name: "public-b",
+          rate_multiplier: 1,
+          models: [{ name: "gpt-5.6-sol" }],
+        },
+      ],
+    },
+  }),
+  {
+    groups: [
+      {
+        name: "public-a",
+        rate_multiplier: 0.55,
+        models: [{ name: "gpt-5.4" }, { name: "gpt-5.5" }],
+      },
+      {
+        name: "public-b",
+        rate_multiplier: 1,
+        models: [{ name: "gpt-5.6-sol" }],
+      },
+    ],
+    models: [
+      { name: "gpt-5.4" },
+      { name: "gpt-5.5" },
+      { name: "gpt-5.6-sol" },
+    ],
+    multipliers: [0.55, 1],
+  },
+);
+assert.deepEqual(
+  discoveryTest.normalizeOptions({
+    pages: 99,
+    concurrency: 99,
+    timeoutMs: 10,
+    searchDelayMs: -1,
+    includeConfigured: true,
+  }),
+  {
+    query: 'page.title:"Sub2API"',
+    pages: 20,
+    pageSize: 100,
+    concurrency: 16,
+    timeoutMs: 1000,
+    searchTimeoutMs: 15000,
+    searchDelayMs: 0,
+    progressEvery: 100,
+    includeConfigured: true,
+    quiet: false,
+  },
+);
 const configuredRtocSource = transitSourceConfig.find((source) => source.id === "ai-rtoc-cc");
 assert.ok(configuredRtocSource, "RTOC AI must stay in API transit public collection sources.");
 assert.equal(configuredRtocSource.collectorKind, "ai_transit_snapshot");
@@ -346,19 +579,21 @@ const scheduledPublishedDragonapiSources = __test.selectSources(
   ),
   { post: true },
 );
-assert.deepEqual(
-  scheduledPublishedDragonapiSources.map((source) => source.id),
-  ["newapi-dragon3api-com"],
+assert.ok(
+  scheduledPublishedDragonapiSources.some((source) => source.id === "newapi-dragon3api-com"),
   "DragonAPI must be eligible for scheduled pricing and monitoring refresh once published.",
+);
+assert.ok(
+  scheduledPublishedDragonapiSources.some((source) => source.autoPublish === true),
+  "Scheduled refresh must also include configured auto-publish candidates for their first collection.",
 );
 
 const scheduledPublishedRtocSources = __test.selectSources(
   __test.filterSourcesByPublishedStationIds(transitSourceConfig, new Set(["ai-rtoc-cc"])),
   { post: true },
 );
-assert.deepEqual(
-  scheduledPublishedRtocSources.map((source) => source.id),
-  ["ai-rtoc-cc"],
+assert.ok(
+  scheduledPublishedRtocSources.some((source) => source.id === "ai-rtoc-cc"),
   "RTOC AI must be eligible for the scheduled public pricing and monitoring refresh once published.",
 );
 
@@ -834,10 +1069,15 @@ const sources = [
   { id: "published-new-api" },
   { id: "pending-new-api" },
   { id: "removed-new-api" },
+  { id: "new-auto-publish-source", autoPublish: true },
 ];
 assert.deepEqual(
   __test.filterSourcesByPublishedStationIds(sources, new Set(["published-new-api"])),
-  [{ id: "published-new-api" }],
+  [
+    { id: "published-new-api" },
+    { id: "new-auto-publish-source", autoPublish: true },
+  ],
+  "Scheduled collection must refresh published stations and bootstrap configured auto-publish candidates.",
 );
 
 assert.equal(__test.shouldRestrictToPublishedStations({ post: true }), true);
@@ -1434,6 +1674,182 @@ assert.equal(apinodeGpt55Economy.model_multiplier, 0.3);
 assert.equal(apinodeGpt55Economy.availability_seven_day_rate, 0.976494);
 assert.equal(apinodeGpt55Economy.last_verified_at, "2026-06-30T07:11:17Z");
 assert.match(apinodeGpt55Economy.availability_note, /非 PriceAI API Key 实测/);
+
+const sub2ApiModelPlaza = __test.parseSub2ApiModelPlazaPayload(
+  configuredSub2ApiModelPlazaSource,
+  {
+    code: 0,
+    message: "success",
+    data: {
+      description: "",
+      groups: [
+        {
+          id: 10,
+          name: "A1GPT-Plus/0.065",
+          description: "Plus pool",
+          platform: "openai",
+          subscription_type: "standard",
+          rate_multiplier: 0.065,
+          peak_rate_enabled: false,
+          peak_rate_multiplier: 1,
+          models: [
+            {
+              name: "gpt-5.4",
+              platform: "openai",
+              pricing: {
+                billing_mode: "token",
+                input_price: 0.0000025,
+                output_price: 0.000015,
+                cache_read_price: 0.00000025,
+                cache_write_price: 0,
+                image_output_price: null,
+              },
+              official_pricing: {
+                input_price: 0.0000025,
+                output_price: 0.000015,
+              },
+            },
+            {
+              name: "gpt-5.6-luna",
+              platform: "openai",
+              pricing: {
+                billing_mode: "token",
+                input_price: 0.0000002,
+                output_price: 0.0000012,
+                cache_read_price: 0.00000002,
+                cache_write_price: 0.00000025,
+                image_output_price: null,
+              },
+            },
+            {
+              name: "mimo-v2.5",
+              platform: "openai",
+              pricing: {
+                billing_mode: "token",
+                input_price: 0.000001,
+                output_price: 0.000002,
+              },
+            },
+          ],
+        },
+        {
+          id: 11,
+          name: "B1/gpt-5.6-sol/0.03",
+          description: "experimental",
+          platform: "openai",
+          subscription_type: "standard",
+          rate_multiplier: 0.03,
+          peak_rate_enabled: true,
+          peak_start: "18:00",
+          peak_end: "23:00",
+          peak_rate_multiplier: 1.5,
+          models: [
+            {
+              name: "gpt-5.6-sol",
+              platform: "openai",
+              pricing: {
+                billing_mode: "token",
+                input_price: 0.000005,
+                output_price: 0.00003,
+                cache_read_price: 0.0000005,
+                cache_write_price: 0.00000625,
+                image_output_price: 0,
+              },
+            },
+          ],
+        },
+      ],
+    },
+  },
+  "2026-07-31T08:05:37.000Z",
+);
+assert.equal(sub2ApiModelPlaza.modelCount, 4);
+assert.equal(sub2ApiModelPlaza.offers.length, 3);
+assert.equal(sub2ApiModelPlaza.station.collector_kind, "sub2api_model_plaza");
+assert.equal(sub2ApiModelPlaza.station.station_system, "sub_to_api");
+assert.equal(sub2ApiModelPlaza.station.published, true);
+const sub2ApiGpt54Offer = sub2ApiModelPlaza.offers.find(
+  (offer) => offer.standard_model === "GPT 5.4" && offer.group_name === "A1GPT-Plus/0.065",
+);
+assert.equal(sub2ApiGpt54Offer.model_multiplier, 0.065);
+assert.equal(sub2ApiGpt54Offer.input_price, 0.065);
+assert.equal(sub2ApiGpt54Offer.output_price, 0.065);
+assert.equal(sub2ApiGpt54Offer.cache_read_price, 0.065);
+assert.equal(sub2ApiGpt54Offer.cache_write_price, 0);
+assert.equal(sub2ApiGpt54Offer.price_source, "Sub2API 公开模型广场");
+assert.equal(sub2ApiGpt54Offer.availability_source_type, "public_model_catalog");
+assert.equal(
+  sub2ApiGpt54Offer.raw_payload.multiplier_basis,
+  "sub2api_model_plaza_group_rate_multiplier",
+);
+const sub2ApiPeakOffer = sub2ApiModelPlaza.offers.find(
+  (offer) => offer.standard_model === "GPT 5.6 Sol" && offer.group_name === "B1/gpt-5.6-sol/0.03",
+);
+assert.equal(sub2ApiPeakOffer.model_multiplier, 0.03);
+assert.equal(sub2ApiPeakOffer.image_output_price, 0);
+assert.equal(sub2ApiPeakOffer.raw_payload.group.peak_rate_enabled, true);
+assert.equal(sub2ApiPeakOffer.raw_payload.group.peak_rate_multiplier, 1.5);
+
+const configuredGenericSub2ApiProfileSource = configuredSub2ApiPublicProfileSources.find(
+  (source) => source.id === "sub2api-com",
+);
+const openSub2ApiProfile = __test.parseSub2ApiPublicProfilePayload(
+  configuredGenericSub2ApiProfileSource,
+  {
+    code: 0,
+    message: "success",
+    data: {
+      site_name: "Sub2API",
+      api_base_url: "https://api.sub2api.com/v1",
+      registration_enabled: true,
+      invitation_code_enabled: false,
+      payment_enabled: true,
+      version: "1.2.3",
+    },
+  },
+  "2026-07-31T09:00:00.000Z",
+);
+assert.equal(openSub2ApiProfile.profileOnly, true);
+assert.equal(openSub2ApiProfile.modelCount, 0);
+assert.deepEqual(openSub2ApiProfile.offers, []);
+assert.equal(openSub2ApiProfile.station.id, "sub2api-com");
+assert.equal(openSub2ApiProfile.station.slug, "sub2api-com");
+assert.equal(openSub2ApiProfile.station.name, configuredGenericSub2ApiProfileSource.name);
+assert.equal(openSub2ApiProfile.station.published, true);
+assert.equal(openSub2ApiProfile.station.collection_status, "success");
+assert.equal(openSub2ApiProfile.station.usage_advice, "try_small");
+assert.match(openSub2ApiProfile.station.summary, /本页独立记录站点资料/);
+assert.match(openSub2ApiProfile.station.summary, /不混入其他商家的倍率/);
+assert.match(openSub2ApiProfile.station.cautions.join(" "), /暂无公开结构化价格接口/);
+
+const closedSub2ApiProfile = __test.parseSub2ApiPublicProfilePayload(
+  {
+    ...configuredGenericSub2ApiProfileSource,
+    id: "closed-sub2api-example",
+    name: "Sub2API（closed.example）",
+    websiteUrl: "https://closed.example/",
+    apiBaseUrl: "https://closed.example/v1",
+    pricingUrl: "https://closed.example/",
+    pricingEndpointUrl: "https://closed.example/api/v1/settings/public",
+  },
+  {
+    code: 0,
+    message: "success",
+    data: {
+      site_name: "Sub2API",
+      registration_enabled: false,
+      invitation_code_enabled: false,
+      payment_enabled: false,
+    },
+  },
+  "2026-07-31T09:01:00.000Z",
+);
+assert.equal(closedSub2ApiProfile.profileOnly, true);
+assert.deepEqual(closedSub2ApiProfile.offers, []);
+assert.equal(closedSub2ApiProfile.station.name, "Sub2API（closed.example）");
+assert.equal(closedSub2ApiProfile.station.published, true);
+assert.equal(closedSub2ApiProfile.station.usage_advice, "pending");
+assert.match(closedSub2ApiProfile.station.summary, /当前关闭公开注册/);
 
 const aiTransitSnapshot = __test.parsePricingPayload(
   configuredAiTransitSnapshotSource,

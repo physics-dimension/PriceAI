@@ -13,6 +13,7 @@ export const COLLECTOR_RUNTIME_SOURCE_FILES = [
   "scripts/out-of-stock-observation.mjs",
   "scripts/verify-hot-offers.mjs",
   "scripts/import-sub2api-api-transit.mjs",
+  "scripts/sync-sub2api-monitors.mjs",
   "scripts/probe-api-transit.mjs",
   "scripts/refresh-public-api-snapshots.mjs",
   "scripts/runtime-lease.mjs",

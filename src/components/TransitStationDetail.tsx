@@ -1792,6 +1792,7 @@ function buildPriceGroup(
 
 function availabilityTimestampLabel(sourceType: TransitModelPrice["availability"]["sourceType"]): string {
   if (sourceType === "priceai_probe") return "实测确认";
+  if (sourceType === "station_monitor") return "站方监测";
   if (sourceType === "public_status") return "站方更新";
   if (sourceType === "public_model_catalog") return "快照更新";
   if (sourceType === "partner_api") return "接口更新";

@@ -32,7 +32,12 @@ const footerLinks: readonly FooterLink[] = [
 export function GlobalSiteFooter() {
   const pathname = usePathname();
 
-  if (pathname.startsWith("/admin") || pathname.startsWith("/guides/self-host-api-transit")) return null;
+  if (
+    pathname.startsWith("/admin") ||
+    pathname === "/api-transit" ||
+    pathname.startsWith("/api-transit/") ||
+    pathname.startsWith("/guides/self-host-api-transit")
+  ) return null;
 
   return (
     <footer className="bg-[var(--color-page)] px-5 pt-2 sm:px-8 sm:pt-3" aria-label="PriceAI 站点入口">

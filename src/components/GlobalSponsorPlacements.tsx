@@ -22,8 +22,7 @@ const footerExcludedPathPrefixes = [
   "/admin",
   "/commercial",
   "/support",
-  "/api-transit/submit",
-  "/api-transit/detector/reports",
+  "/api-transit",
   "/guides/self-host-api-transit",
 ] as const;
 

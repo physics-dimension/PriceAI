@@ -130,9 +130,15 @@ async function encryptCredentialPayload(payload: Record<string, unknown>): Promi
 }
 
 function getCredentialEncryptionSecret(): string {
-  const secret = getRuntimeEnv("API_TRANSIT_CREDENTIAL_ENCRYPTION_KEY");
+  const dedicatedSecret = getRuntimeEnv("API_TRANSIT_CREDENTIAL_ENCRYPTION_KEY");
+  const adminSecret = getRuntimeEnv("ADMIN_SESSION_SECRET");
+  const secret =
+    dedicatedSecret ||
+    (adminSecret ? `priceai:api-transit-credentials:v1:${adminSecret}` : "");
   if (!secret || secret.length < 32) {
-    throw new Error("服务端未配置 API_TRANSIT_CREDENTIAL_ENCRYPTION_KEY，暂时无法接收测试凭据。");
+    throw new Error(
+      "服务端未配置 API_TRANSIT_CREDENTIAL_ENCRYPTION_KEY 或 ADMIN_SESSION_SECRET，暂时无法接收测试凭据。",
+    );
   }
   return secret;
 }

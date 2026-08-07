@@ -1295,7 +1295,7 @@ function ProductTable({
                       title="查看最低价报价"
                       className="group inline-flex flex-col gap-1 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#5a6061]/30 focus-visible:ring-offset-2"
                     >
-                      <span className="text-lg font-bold text-[#202829] group-hover:text-[#5e5e5e]">
+                      <span className="whitespace-nowrap text-lg font-bold text-[#202829] group-hover:text-[#5e5e5e]">
                         {formatCurrency(product.lowestPrice, previewOffer?.currency)}
                       </span>
                       <span className={`w-fit rounded-full px-2 py-0.5 text-[0.65rem] font-semibold transition group-hover:brightness-95 ${tableStatusClass(isAvailable)}`}>
@@ -2573,7 +2573,11 @@ function CountBadge({
     danger: "bg-[#fbe9e7] text-[#9b3328]",
   }[tone];
 
-  return <span className={`rounded-full px-2.5 py-1 font-medium ${className}`}>{children}</span>;
+  return (
+    <span className={`inline-flex shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 font-medium ${className}`}>
+      {children}
+    </span>
+  );
 }
 
 function tableStatusClass(isAvailable: boolean): string {

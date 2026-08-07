@@ -4,13 +4,13 @@ export default function ProductDetailLoading() {
   return (
     <main className="min-h-screen bg-[#f9f9f9] text-[#2d3435]">
       <header className="sticky top-0 z-40 border-b border-[#dfe4e5] bg-[#f9f9f9]/95 shadow-[0_10px_24px_rgba(45,52,53,0.035)] backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-[1300px] items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto flex h-16 max-w-[1500px] items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
           <div className="h-10 w-28 rounded-full bg-[#e4e9ea]" />
           <AppLogo compact />
         </div>
       </header>
 
-      <div className="mx-auto max-w-[1300px] px-4 py-8 sm:px-6 lg:px-8 lg:py-12">
+      <div className="mx-auto max-w-[1500px] px-4 py-8 sm:px-6 lg:px-8 lg:py-12">
         <section className="rounded-lg bg-[#f2f4f4] p-6 shadow-[0_20px_60px_rgba(45,52,53,0.04)] lg:p-8">
           <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(420px,520px)] lg:items-end">
             <div className="min-w-0 max-w-3xl">

@@ -1374,7 +1374,7 @@ function PlatformOfferTable({
               <col className="w-[130px]" />
               <col className="w-[150px]" />
               <col className="w-[140px]" />
-              <col className="w-[80px]" />
+              <col className="w-[112px]" />
             </colgroup>
             <thead className="bg-[#f2f4f4] text-[0.68rem] font-semibold text-[#5a6061]">
               <tr>
@@ -1385,7 +1385,7 @@ function PlatformOfferTable({
                 <TableHead>价格</TableHead>
                 <TableHead>最近确认</TableHead>
                 <TableHead className="text-center">操作</TableHead>
-                <TableHead className="text-center">详情</TableHead>
+                <TableHead className="text-center">反馈</TableHead>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#edf0f1]">
@@ -1494,7 +1494,7 @@ function PlatformOfferTableRow({
   const available = isAvailable(offer);
 
   return (
-    <tr id={rowId} className={`transition hover:bg-[#f7f9f9] ${grouped ? "bg-[#fbfcfc]" : available ? "" : "bg-[#fbf7f6]"}`}>
+    <tr id={rowId} className={`transition ${grouped ? "bg-[#eef3f8] hover:bg-[#e7eef4]" : available ? "hover:bg-[#f7f9f9]" : "bg-[#fbf7f6] hover:bg-[#f8efed]"}`}>
       <td className="px-5 py-4"><OfferStatusBadge available={available} /></td>
       <td className="max-w-[190px] px-5 py-4"><PlatformProductSummary product={product} /></td>
       <td className="max-w-[220px] px-5 py-4">
@@ -1584,11 +1584,9 @@ function PlatformOfferGroupCard({
               {productIcon(product)}
               <span className="truncate">{product.platform} · {product.displayName}</span>
             </div>
-            <p className="line-clamp-2 text-sm font-semibold leading-6 text-[#202829]">{group.title}</p>
-            <div className="mt-2 min-w-0">
-              <OfferMerchantLink offer={offer} mode="card" />
-              <p className="mt-0.5 truncate text-xs text-[#5a6061]">最低价渠道 · 共 {group.merchantCount} 家</p>
-            </div>
+            <OfferMerchantLink offer={offer} mode="card" />
+            <p className="mt-0.5 truncate text-xs text-[#5a6061]">最低价渠道 · 共 {group.merchantCount} 家</p>
+            <p className="mt-1 line-clamp-2 text-sm leading-6 text-[#5a6061]">{group.title}</p>
           </div>
           <OfferStatusBadge available={available} />
         </div>
@@ -1621,7 +1619,7 @@ function PlatformOfferGroupCard({
         </button>
       </article>
       {expanded ? (
-        <div id={detailsId} className="ml-3 mt-2 grid gap-2 border-l border-[#dfe4e5] pl-3">
+        <div id={detailsId} className="mt-2 grid gap-2 rounded-lg bg-[#eef3f8] p-2">
           {group.items.map(({ offer: itemOffer, product: itemProduct }) => (
             <PlatformOfferCard
               key={itemOffer.id}

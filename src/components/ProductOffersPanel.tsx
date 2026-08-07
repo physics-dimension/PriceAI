@@ -1482,7 +1482,7 @@ function OfferTable({
             <col className="w-[112px]" />
             <col className="w-[118px]" />
             <col className="w-[130px]" />
-            <col className="w-[64px]" />
+            <col className="w-[108px]" />
           </colgroup>
           <thead className="bg-[#f2f4f4] text-[0.68rem] font-semibold text-[#5a6061]">
             <tr>
@@ -1493,7 +1493,7 @@ function OfferTable({
               <TableHead>更新时间</TableHead>
               <TableHead className="text-center">风险</TableHead>
               <TableHead className="text-center">操作</TableHead>
-              <TableHead className="text-center">详情</TableHead>
+              <TableHead className="text-center">反馈</TableHead>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#edf0f1]">
@@ -1545,14 +1545,7 @@ function OfferTableGroup({
   return (
     <>
       <tr className={`transition hover:bg-[#f7f9f9] ${available ? "" : "bg-[#fbf7f6]"}`}>
-        <td className="px-5 py-4">
-          <span className="flex flex-col items-start gap-1">
-            <OfferStatusBadge available={available} />
-            <span className="whitespace-nowrap text-[0.68rem] font-semibold text-[#5a6061]">
-              {group.availableMerchantCount} 家有货
-            </span>
-          </span>
-        </td>
+        <td className="px-5 py-4"><OfferInventorySummary offer={offer} available={available} /></td>
         <td className="px-4 py-4">
           <span className="flex min-w-0 items-center gap-2">
             <CollectorSourceLogo group={collectorGroup} platformId={sourcePlatform.id} size="compact" />
@@ -1640,7 +1633,7 @@ function OfferTableRow({
   return (
     <tr
       id={rowId}
-      className={`group/row transition hover:bg-[#f7f9f9] ${grouped ? "bg-[#fbfcfc]" : available ? "" : "bg-[#fbf7f6]"}`}
+      className={`group/row transition ${grouped ? "bg-[#eef3f8] hover:bg-[#e7eef4]" : available ? "hover:bg-[#f7f9f9]" : "bg-[#fbf7f6] hover:bg-[#f8efed]"}`}
     >
       <td className="px-5 py-4"><OfferInventorySummary offer={offer} available={available} /></td>
       <td className="px-4 py-4">
@@ -1751,28 +1744,19 @@ function OfferGroupListItem({
     <section className="min-w-0">
       <article className={`min-w-0 rounded-lg px-4 py-3.5 ring-1 ${available ? "bg-white ring-[#adb3b4]/15" : "bg-[#fbf7f6] ring-[#ead8d5]"}`}>
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <OfferSourceTitle title={group.title} mode="card" sharedAccess={sharedAccess} />
-            <div className="mt-2 flex min-w-0 items-center gap-2">
-              <CollectorSourceLogo group={collectorGroup} platformId={sourcePlatform.id} size="compact" />
-              <div className="min-w-0">
-                <OfferMerchantLink offer={offer} mode="card" />
-                <p className="mt-0.5 truncate text-xs text-[#5a6061]">最低价渠道 · 共 {group.merchantCount} 家</p>
-              </div>
+          <div className="flex min-w-0 items-start gap-2">
+            <CollectorSourceLogo group={collectorGroup} platformId={sourcePlatform.id} size="compact" />
+            <div className="min-w-0">
+              <OfferMerchantLink offer={offer} mode="card" />
+              <p className="mt-0.5 truncate text-xs text-[#5a6061]">最低价渠道 · 共 {group.merchantCount} 家</p>
+              <OfferSourceTitle title={group.title} mode="card" sharedAccess={sharedAccess} />
+              <p className="mt-1 text-xs font-semibold text-[#5a6061]">
+                同名报价 {group.offerCount} 条
+                {group.riskMerchantCount > 0 ? <span className="text-[#8a5a10]"> · {group.riskMerchantCount} 家风险</span> : null}
+              </p>
             </div>
           </div>
-          <OfferStatusBadge available={available} />
-        </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-semibold text-[#5a6061]">
-          <span>{group.availableMerchantCount} 家有货</span>
-          <span aria-hidden="true">·</span>
-          <span>{group.offerCount} 条报价</span>
-          {group.riskMerchantCount > 0 ? (
-            <>
-              <span aria-hidden="true">·</span>
-              <span className="text-[#8a5a10]">{group.riskMerchantCount} 家风险</span>
-            </>
-          ) : null}
+          <OfferInventorySummary offer={offer} available={available} compact />
         </div>
         <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
           <div className="min-w-0">
@@ -1795,7 +1779,7 @@ function OfferGroupListItem({
         </button>
       </article>
       {expanded ? (
-        <div id={detailsId} className="ml-3 mt-2 grid gap-2 border-l border-[#dfe4e5] pl-3">
+        <div id={detailsId} className="mt-2 grid gap-2 rounded-lg bg-[#eef3f8] p-2">
           {group.items.map((item, index) => (
             <OfferListItem
               key={offerRowKey(item, index)}

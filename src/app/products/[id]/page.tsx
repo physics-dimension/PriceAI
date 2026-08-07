@@ -110,7 +110,7 @@ export default async function ProductDetail({
     <main className="min-h-screen bg-[#f9f9f9] text-[#2d3435]">
       <ProductDetailHeader />
 
-      <div className="mx-auto max-w-[1300px] px-4 py-4 sm:px-6 md:py-8 lg:px-8 lg:py-12">
+      <div className="mx-auto max-w-[1500px] px-4 py-4 sm:px-6 md:py-8 lg:px-8 lg:py-12">
         <div className="mb-2 md:mb-5">
           <ProductReturnLink />
         </div>

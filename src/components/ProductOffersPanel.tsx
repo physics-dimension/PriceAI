@@ -1568,14 +1568,7 @@ function OfferTableGroup({
         <td className="whitespace-nowrap px-4 py-4 text-[#5a6061]">
           <OfferRelativeTime value={group.latestAt} />
         </td>
-        <td className="px-3 py-3 text-center">
-          {group.riskMerchantCount > 0 ? (
-            <span className="inline-flex h-8 items-center gap-1 whitespace-nowrap rounded-full bg-[#fff7df] px-2.5 text-xs font-semibold text-[#8a5a10] ring-1 ring-[#efd38a]">
-              <AlertTriangle size={13} />
-              {group.riskMerchantCount} 家风险
-            </span>
-          ) : <span aria-hidden="true" className="block h-8" />}
-        </td>
+        <td className="px-3 py-3 text-center"><OfferRiskCell offer={offer} /></td>
         <td className="px-3 py-3 text-center">
           <OfferLink offer={offer} available={available} compact onRequestPurchase={onRequestPurchase} />
         </td>
@@ -1750,10 +1743,8 @@ function OfferGroupListItem({
               <OfferMerchantLink offer={offer} mode="card" />
               <p className="mt-0.5 truncate text-xs text-[#5a6061]">最低价渠道 · 共 {group.merchantCount} 家</p>
               <OfferSourceTitle title={group.title} mode="card" sharedAccess={sharedAccess} />
-              <p className="mt-1 text-xs font-semibold text-[#5a6061]">
-                同名报价 {group.offerCount} 条
-                {group.riskMerchantCount > 0 ? <span className="text-[#8a5a10]"> · {group.riskMerchantCount} 家风险</span> : null}
-              </p>
+              <p className="mt-1 text-xs font-semibold text-[#5a6061]">同名报价 {group.offerCount} 条</p>
+              {offer.riskFeedback?.count ? <div className="mt-2"><OfferRiskButton offer={offer} /></div> : null}
             </div>
           </div>
           <OfferInventorySummary offer={offer} available={available} compact />
@@ -1836,7 +1827,7 @@ function OfferRiskCell({ offer }: { offer: RawOffer }) {
   return <OfferRiskButton offer={offer} />;
 }
 
-function OfferRiskButton({ offer, compact = false }: { offer: RawOffer; compact?: boolean }) {
+export function OfferRiskButton({ offer, compact = false }: { offer: RawOffer; compact?: boolean }) {
   const [open, setOpen] = useState(false);
   const risk = offer.riskFeedback;
   if (!risk?.count) return null;

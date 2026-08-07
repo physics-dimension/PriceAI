@@ -23,7 +23,7 @@ import { BrandIcon } from "@/components/BrandIcon";
 import { CategoryTabBar, CategoryTabStrip, type CategoryTabItem } from "@/components/CategoryTabBar";
 import { CollectorSourceLogo } from "@/components/MerchantCollectorSource";
 import { GuidePromptStrip } from "@/components/GuidePromptStrip";
-import { MerchantFeedbackDialog, OfferActions, OfferFeedbackButton, OfferFeedbackDialog, OfferLink, OfferMerchantLink } from "@/components/ProductOffersPanel";
+import { MerchantFeedbackDialog, OfferActions, OfferFeedbackButton, OfferFeedbackDialog, OfferLink, OfferMerchantLink, OfferRiskButton } from "@/components/ProductOffersPanel";
 import { SiteHeader } from "@/components/SiteHeader";
 import { clearFeedbackResumeRequest, getFeedbackResumeRequest } from "@/lib/feedback-draft";
 import { listDetailNavigationHref, shouldHandleListDetailClick } from "@/lib/list-return";
@@ -1444,7 +1444,7 @@ function PlatformOfferTableGroup({
           <span className="block truncate text-[#2d3435]" title={group.title}>{group.title}</span>
           <span className="mt-1 flex flex-wrap items-center gap-2 text-[0.68rem] font-semibold text-[#7a8587]">
             <span>同名报价 {group.offerCount} 条</span>
-            {group.riskMerchantCount > 0 ? <span className="text-[#8a5a10]">{group.riskMerchantCount} 家风险</span> : null}
+            {offer.riskFeedback?.count ? <OfferRiskButton offer={offer} /> : null}
           </span>
         </td>
         <td className="px-5 py-4">
@@ -1594,9 +1594,7 @@ function PlatformOfferGroupCard({
           <span>{group.availableMerchantCount} 家有货</span>
           <span aria-hidden="true">·</span>
           <span>{group.offerCount} 条报价</span>
-          {group.riskMerchantCount > 0 ? (
-            <><span aria-hidden="true">·</span><span className="text-[#8a5a10]">{group.riskMerchantCount} 家风险</span></>
-          ) : null}
+          {offer.riskFeedback?.count ? <OfferRiskButton offer={offer} /> : null}
         </div>
         <div className="mt-4 flex items-end justify-between gap-3">
           <div className="min-w-0">

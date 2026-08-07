@@ -13,6 +13,7 @@ import {
   shouldCreateFeedbackVerification,
 } from "../src/lib/trust-risk.js";
 import type { OfferFeedbackReason } from "../src/lib/types.js";
+import { sourceIdFromShopUrl } from "../src/lib/shop-source-search.js";
 
 const optionalEvidenceReasons: OfferFeedbackReason[] = [
   "wrong_price",
@@ -79,6 +80,21 @@ assertEqual(isFeedbackImageEvidenceReference(legacyImageReference), true, "legac
 assertEqual(isFeedbackImageEvidenceReference(draftImageReference), true, "uploaded draft feedback image reference should count as image evidence before binding");
 assertEqual(hasFeedbackImageEvidenceReference([draftImageReference]), true, "draft image references should satisfy high-risk image evidence checks");
 assertEqual(countFeedbackImageEvidenceReferences([draftImageReference, "https://example.com/evidence.png"]), 1, "only managed image references should count as image evidence");
+
+assertEqual(
+  sourceIdFromShopUrl("https://pay.ldxp.cn/shop/PAXOVOVJ"),
+  "ldxp-paxovovj",
+  "LDXP shop URLs should resolve to their source ID",
+);
+assertEqual(
+  sourceIdFromShopUrl("https://www.ldxp.cn/shop/PAXOVOVJ/?utm_source=priceai"),
+  "ldxp-paxovovj",
+  "LDXP shop URL variants should resolve to the same source ID",
+);
+assertEqual(sourceIdFromShopUrl("https://pay.qxvx.cn/shop/DemoShop"), "qxvx-demoshop", "QXVX shop URLs should resolve to their source ID");
+assertEqual(sourceIdFromShopUrl("https://catfk.com/shop/DemoShop"), "catfk-demoshop", "CatFK shop URLs should resolve to their source ID");
+assertEqual(sourceIdFromShopUrl("https://pay.ldxp.cn/item/thkc0p"), null, "product URLs should not broaden feedback search");
+assertEqual(sourceIdFromShopUrl("奥特曼严选"), null, "plain search text should keep the existing text search behavior");
 
 console.log("feedback rules test passed");
 

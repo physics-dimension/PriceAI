@@ -66,6 +66,7 @@ import {
 } from "./product-offer-filters";
 import { PRICE_DATA_CACHE_TTL_MS, priceDataCacheTtlMsForProduct } from "./public-cache-policy";
 import { seedRawOffers, seedSources } from "./sample-data";
+import { sourceIdFromShopUrl } from "./shop-source-search";
 import { getSupabaseServerClient } from "./supabase";
 import { API_CDK_PLATFORM, getPublicRiskPrecheck, isPublicCatalogProduct } from "./trust-risk";
 import type {
@@ -413,6 +414,7 @@ type OfferListFilters = {
   productType?: string | null;
   stock?: string | null;
   query?: string | null;
+  sourceId?: string | null;
   minPrice?: number | null;
   maxPrice?: number | null;
   sort?: string | null;
@@ -5178,9 +5180,11 @@ function buildProductOfferSearchHaystack(offer: RawOffer): string {
 }
 
 export async function listPublicOffers(filters: OfferListFilters = {}) {
+  const normalizedQuery = normalizePublicOfferQuery(filters.query);
   const normalizedFilters = {
     ...filters,
-    query: normalizePublicOfferQuery(filters.query),
+    query: normalizedQuery,
+    sourceId: filters.sourceId || sourceIdFromShopUrl(normalizedQuery),
     limit: normalizePublicOfferLimit(filters.limit),
     offset: normalizePublicOfferOffset(filters.offset),
   };
@@ -5633,7 +5637,7 @@ async function loadPublicOffers(
 
   const publicData = await readPublicOfferData();
   const productGroups = buildProductGroups(publicData.offers, publicData.products).map(toExplorerProductSummary);
-  const normalizedQuery = (filters.query || "").trim().toLowerCase();
+  const normalizedQuery = filters.sourceId ? "" : (filters.query || "").trim().toLowerCase();
   const limit = normalizePublicOfferLimit(filters.limit);
   const offset = normalizePublicOfferOffset(filters.offset);
 
@@ -5645,6 +5649,7 @@ async function loadPublicOffers(
     })
     .filter(({ offer, product }) => {
       const haystack = [
+        offer.sourceId || "",
         offer.sourceTitle,
         offer.sourceName,
         offer.sourceStoreName || "",
@@ -5657,6 +5662,7 @@ async function loadPublicOffers(
         .join(" ")
         .toLowerCase();
 
+      if (filters.sourceId && offer.sourceId !== filters.sourceId) return false;
       if (normalizedQuery && !haystack.includes(normalizedQuery)) return false;
       if (filters.platform && filters.platform !== "全部" && product.platform !== filters.platform) return false;
       if (filters.productType && filters.productType !== "全部" && product.productType !== filters.productType) return false;
@@ -5716,8 +5722,9 @@ async function listPublicOffersFromDatabase(
 
   const limit = normalizePublicOfferLimit(filters.limit);
   const offset = normalizePublicOfferOffset(filters.offset);
+  const sourceQuery = filters.sourceId ? await resolvePublicOfferSourceQuery(filters.sourceId) : null;
   const rpcParams = {
-    p_query: filters.query || null,
+    p_query: sourceQuery || filters.query || null,
     p_platform: filters.platform || null,
     p_product_type: filters.productType || null,
     p_stock: filters.stock || null,
@@ -5746,7 +5753,8 @@ async function listPublicOffersFromDatabase(
     return null;
   }
 
-  const allRows = ((data || []) as unknown as PublicOfferPageRow[]);
+  const allRows = ((data || []) as unknown as PublicOfferPageRow[])
+    .filter((row) => !filters.sourceId || String(row.source_id || "") === filters.sourceId);
   const rows = allRows.filter(isPublicOfferPageRowProductVisible);
   const total = rows.length === allRows.length
     ? rows.length ? Number(rows[0].total_count || rows.length) : 0
@@ -5772,6 +5780,25 @@ async function listPublicOffersFromDatabase(
     degraded: false,
     message: null,
   };
+}
+
+async function resolvePublicOfferSourceQuery(sourceId: string): Promise<string> {
+  const supabase = getSupabaseServerClient();
+  if (!supabase) return sourceId;
+
+  const { data, error } = await supabase
+    .from("sources")
+    .select("name")
+    .eq("id", sourceId)
+    .abortSignal(publicSupabaseReadSignal())
+    .maybeSingle();
+
+  if (error) {
+    console.warn("Public offer shop URL source lookup failed:", error.message);
+    return sourceId;
+  }
+
+  return typeof data?.name === "string" && data.name.trim() ? data.name.trim() : sourceId;
 }
 
 async function refreshPublicOfferReadModel(): Promise<boolean> {

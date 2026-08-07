@@ -11,6 +11,7 @@ import {
 import { pruneOperationalLogs } from "./operational-logs";
 import { safeFetch } from "./safe-fetch";
 import { isFeedbackEvidenceReference } from "./feedback-evidence";
+import { sourceIdFromShopUrl } from "./shop-source-search";
 import { getSupabaseServerClient } from "./supabase";
 import {
   buildSubmissionPriceEvidence,
@@ -3676,6 +3677,7 @@ export async function listOfferFeedback(statusOrOptions: OfferFeedbackStatus | O
   const options = typeof statusOrOptions === "string" ? { status: statusOrOptions } : statusOrOptions;
   const status = options.status || "pending";
   const search = toOfferFeedbackSearchPattern(options.query || "");
+  const searchedSourceId = sourceIdFromShopUrl(options.query);
 
   let query = supabase
     .from("offer_feedback")
@@ -3684,21 +3686,23 @@ export async function listOfferFeedback(statusOrOptions: OfferFeedbackStatus | O
     .order("created_at", { ascending: false });
 
   if (search) {
+    const filters = [
+      `source_name.ilike.${search}`,
+      `source_id.ilike.${search}`,
+      `source_title.ilike.${search}`,
+      `offer_url.ilike.${search}`,
+      `offer_id.ilike.${search}`,
+      `product_id.ilike.${search}`,
+      `product_slug.ilike.${search}`,
+      `product_name.ilike.${search}`,
+      `evidence_text.ilike.${search}`,
+      `notes.ilike.${search}`,
+      `contact.ilike.${search}`,
+      `reviewer_note.ilike.${search}`,
+    ];
+    if (searchedSourceId) filters.push(`source_id.eq.${searchedSourceId}`);
     query = query.or(
-      [
-        `source_name.ilike.${search}`,
-        `source_id.ilike.${search}`,
-        `source_title.ilike.${search}`,
-        `offer_url.ilike.${search}`,
-        `offer_id.ilike.${search}`,
-        `product_id.ilike.${search}`,
-        `product_slug.ilike.${search}`,
-        `product_name.ilike.${search}`,
-        `evidence_text.ilike.${search}`,
-        `notes.ilike.${search}`,
-        `contact.ilike.${search}`,
-        `reviewer_note.ilike.${search}`,
-      ].join(","),
+      filters.join(","),
     );
   }
 

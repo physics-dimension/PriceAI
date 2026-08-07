@@ -2800,7 +2800,7 @@ function compareProductPrice(a: ExplorerProductSummary, b: ExplorerProductSummar
 }
 
 function searchPlaceholderForScope(scopeMode: ScopeMode): string {
-  if (scopeMode === "offers") return "搜索报价标题、渠道名或商品关键词";
+  if (scopeMode === "offers") return "搜索报价标题、渠道名、商品关键词或店铺链接";
   if (scopeMode === "merchants") return "搜索店铺名，或粘贴店铺链接";
   return "搜索标准商品，如 ChatGPT Plus、Gemini Pro、邮箱";
 }

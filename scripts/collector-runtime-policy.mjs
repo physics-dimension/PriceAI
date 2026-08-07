@@ -22,14 +22,6 @@ export const COLLECTOR_RUNTIME_SOURCE_FILES = [
   "config/collectors.json",
 ];
 
-export const COLLECTOR_RUNTIME_WORKFLOW_FILES = [
-  ".github/workflows/collect-api-transit.yml",
-  ".github/workflows/collect-dujiao-prices.yml",
-  ".github/workflows/collect-prices.yml",
-  ".github/workflows/probe-api-transit.yml",
-  ".github/workflows/refresh-public-api-snapshots.yml",
-];
-
 export const COLLECTOR_RUNTIME_LAUNCHER_FILES = [
   "ops/collector-runtime/run-api-transit-public.sh",
   "ops/collector-runtime/run-domestic-nonshop.sh",
@@ -46,7 +38,6 @@ export const COLLECTOR_RUNTIME_LAUNCHER_FILES = [
 export const COLLECTOR_RUNTIME_WATCHLIST = uniqueSorted([
   ...COLLECTOR_RUNTIME_SOURCE_FILES,
   ...COLLECTOR_RUNTIME_LAUNCHER_FILES,
-  ...COLLECTOR_RUNTIME_WORKFLOW_FILES,
   ...COLLECTOR_RUNTIME_DEPENDENCY_FILES,
 ]);
 

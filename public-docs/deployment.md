@@ -1,6 +1,6 @@
 # 部署说明
 
-PriceAI 当前生产推荐路径是 Cloudflare Workers + OpenNext，Supabase 保存数据，GitHub Actions 或独立采集节点负责定时采集。
+PriceAI 当前生产推荐路径是 Cloudflare Workers + OpenNext，Supabase 保存数据，GitHub Actions 只负责生产部署，定时采集由独立服务器节点负责。
 
 ## 默认生产部署
 
@@ -49,7 +49,7 @@ npm run deploy:production -- --local
 
 ## 定时采集
 
-仓库包含价格采集 workflow，也可以使用自有服务器节点运行采集脚本。
+仓库保留价格采集脚本，由自有服务器节点通过 systemd timer 定时运行。GitHub Actions 不执行采集、探测或维护任务。
 
 常用命令：
 
@@ -84,7 +84,7 @@ priceai-api-transit-public.service
 priceai-api-transit-public.timer
 ```
 
-GitHub Actions 的 `.github/workflows/collect-api-transit.yml` 只保留每 6 小时兜底和手动触发，避免与 VPS 10 分钟主采集重复写库。
+API 中转公开采集完全由服务器上的 systemd timer 承担，GitHub Actions 不提供兜底或手动采集入口。
 
 排查公开来源样本不更新时，优先查看：
 

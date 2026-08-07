@@ -231,7 +231,6 @@ npm run collect:browser -- --url https://example.com/ --password your-admin-pass
 
 ## Star 趋势
 
-<!-- assets/priceai-star-history.svg is refreshed by .github/workflows/update-star-history.yml. -->
 <a href="https://www.star-history.com/?type=date&repos=dimthink%2FPriceAI">
   <img alt="PriceAI Star History Chart" src="./assets/priceai-star-history.svg" />
 </a>

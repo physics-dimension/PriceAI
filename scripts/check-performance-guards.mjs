@@ -171,10 +171,6 @@ assert(/prefer_base_unavailable/.test(migrationText), "supabase/migrations: raw_
 assert(/raw_offers\.effective_status = 'unavailable'/.test(migrationText), "supabase/migrations: unavailable raw offer rows must be able to dominate stale confirmation rows.");
 assert(/api_transit_availability_samples_checked_time_idx[\s\S]{0,220}checked_at desc,\s*station_id/.test(migrationText), "supabase/migrations: recent API transit samples must have a global checked_at-first index for ordered multi-station reads.");
 
-const snapshotRefreshWorkflowText = read(".github/workflows/refresh-public-api-snapshots.yml");
-assert(snapshotRefreshWorkflowText.includes('cron: "*/30 * * * *"'), ".github/workflows/refresh-public-api-snapshots.yml: GitHub scheduled snapshot refresh must remain a low-frequency fallback.");
-assert(/\/api\/admin\/public-api-snapshots/.test(snapshotRefreshWorkflowText), ".github/workflows/refresh-public-api-snapshots.yml: scheduled refresh must call the protected snapshot endpoint.");
-
 const cloudflareSmokeText = read("scripts/smoke-cloudflare.mjs");
 assert(/\/api\/offers\?limit=30/.test(cloudflareSmokeText), "scripts/smoke-cloudflare.mjs: production smoke must verify the 30-row cached offers path.");
 assert(/\/api\/products\/chatgpt-plus\/offers\?limit=30/.test(cloudflareSmokeText), "scripts/smoke-cloudflare.mjs: production smoke must verify the 30-row cached product offers path.");
@@ -489,9 +485,6 @@ assert(/"refresh:snapshots"\s*:\s*"node scripts\/refresh-public-api-snapshots\.m
 
 const buildCloudflareText = read("scripts/build-cloudflare.mjs");
 assert(/check-performance-guards\.mjs/.test(buildCloudflareText), "scripts/build-cloudflare.mjs: run performance guards before OpenNext build.");
-
-const qualityWorkflowText = read(".github/workflows/quality.yml");
-assert(/npm run check:performance/.test(qualityWorkflowText), ".github/workflows/quality.yml: run performance guards before build.");
 
 const hotVerifierLauncherText = read("ops/shop-collectors/run-hot-offer-verifier.sh");
 assert(/STATE_DIRECTORY/.test(hotVerifierLauncherText), "hot offer verifier must persist proxy leases in its systemd state directory.");

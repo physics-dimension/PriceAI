@@ -50,7 +50,7 @@
     "test:wholesale": "node scripts/run-ts-test.mjs scripts/test-wholesale.ts",
     "test:channel-submissions": "node scripts/run-ts-test.mjs scripts/test-channel-submissions.ts",
     "test:auth-security": "node scripts/run-ts-test.mjs scripts/test-auth-security.ts",
-    "test:product-offer-pagination": "node scripts/run-ts-test.mjs scripts/test-product-offer-pagination.ts && node scripts/run-ts-test.mjs scripts/test-product-offer-filters.ts && node scripts/run-ts-test.mjs scripts/test-public-price-cache.ts && node scripts/run-ts-test.mjs scripts/test-public-snapshot-refresh.ts",
+    "test:product-offer-pagination": "node scripts/run-ts-test.mjs scripts/test-product-offer-pagination.ts && node scripts/run-ts-test.mjs scripts/test-product-offer-filters.ts && node scripts/run-ts-test.mjs scripts/test-same-title-offer-groups.ts && node scripts/run-ts-test.mjs scripts/test-public-price-cache.ts && node scripts/run-ts-test.mjs scripts/test-public-snapshot-refresh.ts",
     "test:price-radar": "node scripts/run-ts-test.mjs scripts/test-price-radar.ts",
     "test:outbound-analytics": "node scripts/run-ts-test.mjs scripts/test-outbound-analytics.ts",
     "collect:worker": "node scripts/collect-worker.mjs",

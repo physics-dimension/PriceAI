@@ -3,6 +3,7 @@
 import {
   BookOpenText,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   X,
   Database,
@@ -22,7 +23,7 @@ import { BrandIcon } from "@/components/BrandIcon";
 import { CategoryTabBar, CategoryTabStrip, type CategoryTabItem } from "@/components/CategoryTabBar";
 import { CollectorSourceLogo } from "@/components/MerchantCollectorSource";
 import { GuidePromptStrip } from "@/components/GuidePromptStrip";
-import { MerchantFeedbackDialog, OfferActions, OfferFeedbackButton, OfferFeedbackDialog, OfferLink } from "@/components/ProductOffersPanel";
+import { MerchantFeedbackDialog, OfferActions, OfferFeedbackButton, OfferFeedbackDialog, OfferLink, OfferMerchantLink } from "@/components/ProductOffersPanel";
 import { SiteHeader } from "@/components/SiteHeader";
 import { clearFeedbackResumeRequest, getFeedbackResumeRequest } from "@/lib/feedback-draft";
 import { listDetailNavigationHref, shouldHandleListDetailClick } from "@/lib/list-return";
@@ -50,6 +51,7 @@ import {
 import { PRICE_DATA_CACHE_TTL_MS } from "@/lib/public-cache-policy";
 import { PUBLIC_MERCHANT_PAGE_SIZE } from "@/lib/public-merchant-policy";
 import { PUBLIC_OFFER_DEFAULT_LIMIT } from "@/lib/public-offer-query";
+import { groupSameTitleOffers, type SameTitleOfferGroup } from "@/lib/same-title-offer-groups";
 import type {
   CanonicalProduct,
   ExplorerData,
@@ -1354,6 +1356,11 @@ function PlatformOfferTable({
   rows: PlatformOfferRow[];
   onFeedback: (row: PlatformOfferRow) => void;
 }) {
+  const groups = useMemo(
+    () => groupSameTitleOffers(rows, (row) => row.offer, (row) => row.product.id),
+    [rows],
+  );
+
   return (
     <>
       <div className="hidden overflow-hidden rounded-lg bg-white shadow-[0_20px_55px_rgba(45,52,53,0.045)] ring-1 ring-[#adb3b4]/15 md:block">
@@ -1378,76 +1385,142 @@ function PlatformOfferTable({
                 <TableHead>价格</TableHead>
                 <TableHead>最近确认</TableHead>
                 <TableHead className="text-center">操作</TableHead>
-                <TableHead className="text-center">反馈</TableHead>
+                <TableHead className="text-center">详情</TableHead>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#edf0f1]">
-              {rows.map(({ offer, product }) => {
-                const available = isAvailable(offer);
-
-                return (
-                  <tr key={offer.id} className={`transition hover:bg-[#f7f9f9] ${available ? "" : "bg-[#fbf7f6]"}`}>
-                    <td className="px-5 py-4">
-                      <OfferStatusBadge available={available} />
-                    </td>
-                    <td className="max-w-[190px] px-5 py-4">
-                      <span className="flex min-w-0 items-center gap-2">
-                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#f2f4f4] text-[#5a6061]">
-                          {productIcon(product)}
-                        </span>
-                        <span className="min-w-0">
-                          <span className="block truncate font-semibold text-[#202829]">{product.platform}</span>
-                          <span className="mt-1 block truncate text-xs text-[#5a6061]">
-                            {product.displayName}
-                          </span>
-                        </span>
-                      </span>
-                    </td>
-                    <td className="max-w-[220px] px-5 py-4">
-                      <span className="block truncate font-semibold text-[#202829]">{sourceLabel(offer)}</span>
-                      {sourceSecondaryLabel(offer) ? (
-                        <span className="mt-1 block truncate text-xs text-[#5a6061]">{sourceSecondaryLabel(offer)}</span>
-                      ) : null}
-                    </td>
-                    <td className="max-w-[460px] px-5 py-4">
-                      <span className="block truncate text-[#2d3435]">{offer.sourceTitle}</span>
-                    </td>
-                    <td className="px-5 py-4">
-                      <span className={`text-lg font-bold ${available ? "text-[#202829]" : "text-[#9b3328]"}`}>
-                        {formatCurrency(offer.price, offer.currency)}
-                      </span>
-                    </td>
-                    <td className="px-5 py-4 text-[#5a6061]">
-                      <RelativeTime value={offerTimestamp(offer)} />
-                    </td>
-                    <td className="px-3 py-3 text-center">
-                      <OfferLink offer={offer} available={available} compact />
-                    </td>
-                    <td className="px-3 py-3 text-center">
-                      <OfferFeedbackButton
-                        offer={offer}
-                        onFeedback={(selectedOffer) => onFeedback({ offer: selectedOffer, product })}
-                        compact
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
+              {groups.map((group) => group.offerCount > 1 ? (
+                <PlatformOfferTableGroup key={group.key} group={group} onFeedback={onFeedback} />
+              ) : (
+                <PlatformOfferTableRow key={group.key} row={group.representative} onFeedback={onFeedback} />
+              ))}
             </tbody>
           </table>
         </div>
       </div>
       <div className="grid gap-3 md:hidden">
-        {rows.map(({ offer, product }) => (
+        {groups.map((group) => group.offerCount > 1 ? (
+          <PlatformOfferGroupCard key={group.key} group={group} onFeedback={onFeedback} />
+        ) : (
           <PlatformOfferCard
-            key={offer.id}
-            offer={offer}
-            product={product}
-            onFeedback={(selectedOffer) => onFeedback({ offer: selectedOffer, product })}
+            key={group.key}
+            offer={group.representative.offer}
+            product={group.representative.product}
+            onFeedback={(selectedOffer) => onFeedback({ offer: selectedOffer, product: group.representative.product })}
           />
         ))}
       </div>
     </>
+  );
+}
+
+function PlatformOfferTableGroup({
+  group,
+  onFeedback,
+}: {
+  group: SameTitleOfferGroup<PlatformOfferRow>;
+  onFeedback: (row: PlatformOfferRow) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const { offer, product } = group.representative;
+  const available = isAvailable(offer);
+  const detailsId = `platform-offer-group-${offer.id}`;
+
+  return (
+    <>
+      <tr className={`transition hover:bg-[#f7f9f9] ${available ? "" : "bg-[#fbf7f6]"}`}>
+        <td className="px-5 py-4">
+          <span className="flex flex-col items-start gap-1">
+            <OfferStatusBadge available={available} />
+            <span className="whitespace-nowrap text-[0.68rem] font-semibold text-[#5a6061]">{group.availableMerchantCount} 家有货</span>
+          </span>
+        </td>
+        <td className="max-w-[190px] px-5 py-4"><PlatformProductSummary product={product} /></td>
+        <td className="max-w-[220px] px-5 py-4">
+          <OfferMerchantLink offer={offer} mode="table" />
+          <span className="mt-1 block truncate text-xs text-[#5a6061]">最低价渠道 · 共 {group.merchantCount} 家</span>
+        </td>
+        <td className="max-w-[460px] px-5 py-4">
+          <span className="block truncate text-[#2d3435]" title={group.title}>{group.title}</span>
+          <span className="mt-1 flex flex-wrap items-center gap-2 text-[0.68rem] font-semibold text-[#7a8587]">
+            <span>同名报价 {group.offerCount} 条</span>
+            {group.riskMerchantCount > 0 ? <span className="text-[#8a5a10]">{group.riskMerchantCount} 家风险</span> : null}
+          </span>
+        </td>
+        <td className="px-5 py-4">
+          <span className={`text-lg font-bold tabular-nums ${available ? "text-[#202829]" : "text-[#9b3328]"}`}>
+            {formatCurrency(offer.price, offer.currency)} <span className="text-xs font-semibold text-[#5a6061]">起</span>
+          </span>
+        </td>
+        <td className="px-5 py-4 text-[#5a6061]"><RelativeTime value={group.latestAt} /></td>
+        <td className="px-3 py-3 text-center"><OfferLink offer={offer} available={available} compact /></td>
+        <td className="px-3 py-3 text-center">
+          <button
+            type="button"
+            onClick={() => setExpanded((current) => !current)}
+            aria-expanded={expanded}
+            aria-controls={detailsId}
+            className="inline-flex h-9 min-w-[76px] items-center justify-center gap-1 rounded-full bg-[#e4e9ea] px-3 text-xs font-semibold text-[#2d3435] transition hover:bg-[#dde4e5] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#47657a]"
+          >
+            {expanded ? "收起" : `${group.offerCount} 条`}
+            <ChevronDown size={14} className={`transition-transform ${expanded ? "rotate-180" : ""}`} />
+          </button>
+        </td>
+      </tr>
+      {expanded ? group.items.map((row, index) => (
+        <PlatformOfferTableRow
+          key={row.offer.id}
+          row={row}
+          onFeedback={onFeedback}
+          grouped
+          rowId={index === 0 ? detailsId : undefined}
+        />
+      )) : null}
+    </>
+  );
+}
+
+function PlatformOfferTableRow({
+  row: { offer, product },
+  onFeedback,
+  grouped = false,
+  rowId,
+}: {
+  row: PlatformOfferRow;
+  onFeedback: (row: PlatformOfferRow) => void;
+  grouped?: boolean;
+  rowId?: string;
+}) {
+  const available = isAvailable(offer);
+
+  return (
+    <tr id={rowId} className={`transition hover:bg-[#f7f9f9] ${grouped ? "bg-[#fbfcfc]" : available ? "" : "bg-[#fbf7f6]"}`}>
+      <td className="px-5 py-4"><OfferStatusBadge available={available} /></td>
+      <td className="max-w-[190px] px-5 py-4"><PlatformProductSummary product={product} /></td>
+      <td className="max-w-[220px] px-5 py-4">
+        <OfferMerchantLink offer={offer} mode="table" />
+        {sourceSecondaryLabel(offer) ? <span className="mt-1 block truncate text-xs text-[#5a6061]">{sourceSecondaryLabel(offer)}</span> : null}
+      </td>
+      <td className="max-w-[460px] px-5 py-4"><span className="block truncate text-[#2d3435]" title={offer.sourceTitle}>{offer.sourceTitle}</span></td>
+      <td className="px-5 py-4"><span className={`text-lg font-bold tabular-nums ${available ? "text-[#202829]" : "text-[#9b3328]"}`}>{formatCurrency(offer.price, offer.currency)}</span></td>
+      <td className="px-5 py-4 text-[#5a6061]"><RelativeTime value={offerTimestamp(offer)} /></td>
+      <td className="px-3 py-3 text-center"><OfferLink offer={offer} available={available} compact /></td>
+      <td className="px-3 py-3 text-center">
+        <OfferFeedbackButton offer={offer} onFeedback={(selectedOffer) => onFeedback({ offer: selectedOffer, product })} compact />
+      </td>
+    </tr>
+  );
+}
+
+function PlatformProductSummary({ product }: { product: CanonicalProduct }) {
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#f2f4f4] text-[#5a6061]">{productIcon(product)}</span>
+      <span className="min-w-0">
+        <span className="block truncate font-semibold text-[#202829]">{product.platform}</span>
+        <span className="mt-1 block truncate text-xs text-[#5a6061]">{product.displayName}</span>
+      </span>
+    </span>
   );
 }
 
@@ -1470,7 +1543,7 @@ function PlatformOfferCard({
             {productIcon(product)}
             <span className="truncate">{product.platform} · {product.displayName}</span>
           </div>
-          <p className="truncate font-semibold text-[#202829]">{sourceLabel(offer)}</p>
+          <OfferMerchantLink offer={offer} mode="card" />
           <p className="mt-1 line-clamp-2 text-sm leading-6 text-[#5a6061]">{offer.sourceTitle}</p>
         </div>
         <OfferStatusBadge available={available} />
@@ -1487,6 +1560,79 @@ function PlatformOfferCard({
         <OfferActions offer={offer} available={available} onFeedback={onFeedback} />
       </div>
     </article>
+  );
+}
+
+function PlatformOfferGroupCard({
+  group,
+  onFeedback,
+}: {
+  group: SameTitleOfferGroup<PlatformOfferRow>;
+  onFeedback: (row: PlatformOfferRow) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const { offer, product } = group.representative;
+  const available = isAvailable(offer);
+  const detailsId = `mobile-platform-offer-group-${offer.id}`;
+
+  return (
+    <section className="min-w-0">
+      <article className={`rounded-lg p-4 shadow-[0_8px_8px_rgba(45,52,53,0.035)] ring-1 ${available ? "bg-white ring-[#adb3b4]/15" : "bg-[#fbf7f6] ring-[#ead8d5]"}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="mb-2 flex items-center gap-2 text-xs font-medium text-[#5a6061]">
+              {productIcon(product)}
+              <span className="truncate">{product.platform} · {product.displayName}</span>
+            </div>
+            <p className="line-clamp-2 text-sm font-semibold leading-6 text-[#202829]">{group.title}</p>
+            <div className="mt-2 min-w-0">
+              <OfferMerchantLink offer={offer} mode="card" />
+              <p className="mt-0.5 truncate text-xs text-[#5a6061]">最低价渠道 · 共 {group.merchantCount} 家</p>
+            </div>
+          </div>
+          <OfferStatusBadge available={available} />
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-semibold text-[#5a6061]">
+          <span>{group.availableMerchantCount} 家有货</span>
+          <span aria-hidden="true">·</span>
+          <span>{group.offerCount} 条报价</span>
+          {group.riskMerchantCount > 0 ? (
+            <><span aria-hidden="true">·</span><span className="text-[#8a5a10]">{group.riskMerchantCount} 家风险</span></>
+          ) : null}
+        </div>
+        <div className="mt-4 flex items-end justify-between gap-3">
+          <div className="min-w-0">
+            <p className={`text-2xl font-bold tracking-normal tabular-nums ${available ? "text-[#202829]" : "text-[#9b3328]"}`}>
+              {formatCurrency(offer.price, offer.currency)} <span className="text-xs font-semibold text-[#5a6061]">起</span>
+            </p>
+            <p className="mt-1 text-xs text-[#5a6061]"><RelativeTime value={group.latestAt} /></p>
+          </div>
+          <OfferLink offer={offer} available={available} compact />
+        </div>
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          className="mt-3 inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-[#e4e9ea] px-3 text-xs font-semibold text-[#2d3435] transition hover:bg-[#dde4e5] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#47657a]"
+        >
+          {expanded ? "收起全部报价" : `查看全部 ${group.offerCount} 条报价`}
+          <ChevronDown size={14} className={`transition-transform ${expanded ? "rotate-180" : ""}`} />
+        </button>
+      </article>
+      {expanded ? (
+        <div id={detailsId} className="ml-3 mt-2 grid gap-2 border-l border-[#dfe4e5] pl-3">
+          {group.items.map(({ offer: itemOffer, product: itemProduct }) => (
+            <PlatformOfferCard
+              key={itemOffer.id}
+              offer={itemOffer}
+              product={itemProduct}
+              onFeedback={(selectedOffer) => onFeedback({ offer: selectedOffer, product: itemProduct })}
+            />
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 

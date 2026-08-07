@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { AlertTriangle, Boxes, Clock3, ExternalLink, Filter, Flag, ShieldAlert, X } from "lucide-react";
+import { AlertTriangle, Boxes, ChevronDown, Clock3, ExternalLink, Filter, Flag, ShieldAlert, X } from "lucide-react";
 import { type ClipboardEvent, type FormEvent, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { CommunityPrompt } from "@/components/FeedbackLink";
 import { FeedbackEvidenceUploader } from "@/components/FeedbackEvidenceUploader";
@@ -69,6 +69,7 @@ import {
   type ProductOfferStockThreshold,
 } from "@/lib/product-offer-filters";
 import { hasMoreProductOfferPage, mergeProductOfferPages } from "@/lib/product-offer-pagination";
+import { groupSameTitleOffers, type SameTitleOfferGroup } from "@/lib/same-title-offer-groups";
 import { useDialogFocus } from "@/lib/use-dialog-focus";
 import { useFeedbackEvidenceUpload } from "@/lib/use-feedback-evidence-upload";
 import type { MerchantCollectorFilter, OfferFeedbackIssueDimension, OfferFeedbackReason, OfferFeedbackUserExpectedAction, PublicMerchantSummary, RawOffer } from "@/lib/types";
@@ -368,6 +369,10 @@ export function ProductOffersPanel({
     [activeData, purchaseTermsMockEnabled],
   );
   const offers = useMemo(() => visibleData?.offers ?? [], [visibleData]);
+  const offerGroups = useMemo(
+    () => groupSameTitleOffers(offers, (offer) => offer, () => productId),
+    [offers, productId],
+  );
 
   useEffect(() => {
     if (feedbackOffer || !offers.length) return;
@@ -625,20 +630,27 @@ export function ProductOffersPanel({
       />
       {loading || !visibleData ? (
         <OfferTableSkeleton count={Math.min(Math.max(total, 3), 6)} />
-      ) : offers.length ? (
+      ) : offerGroups.length ? (
         isDesktop === false ? (
           <section className="mt-5 grid gap-3 md:hidden">
-            {offers.map((offer, index) => (
+            {offerGroups.map((group) => group.offerCount > 1 ? (
+              <OfferGroupListItem
+                key={group.key}
+                group={group}
+                onFeedback={setFeedbackOffer}
+                onRequestPurchase={setOutboundOffer}
+              />
+            ) : (
               <OfferListItem
-                key={offerRowKey(offer, index)}
-                offer={offer}
+                key={group.key}
+                offer={group.representative}
                 onFeedback={setFeedbackOffer}
                 onRequestPurchase={setOutboundOffer}
               />
             ))}
           </section>
         ) : (
-          <OfferTable offers={offers} onFeedback={setFeedbackOffer} onRequestPurchase={setOutboundOffer} />
+          <OfferTable groups={offerGroups} onFeedback={setFeedbackOffer} onRequestPurchase={setOutboundOffer} />
         )
       ) : (
         <EmptyOfferFilterState onClear={clearOfferFilters} />
@@ -1450,11 +1462,11 @@ function EmptyOfferFilterState({ onClear }: { onClear: () => void }) {
 }
 
 function OfferTable({
-  offers,
+  groups,
   onFeedback,
   onRequestPurchase,
 }: {
-  offers: RawOffer[];
+  groups: SameTitleOfferGroup<RawOffer>[];
   onFeedback: (offer: RawOffer) => void;
   onRequestPurchase: (offer: RawOffer) => void;
 }) {
@@ -1481,67 +1493,173 @@ function OfferTable({
               <TableHead>更新时间</TableHead>
               <TableHead className="text-center">风险</TableHead>
               <TableHead className="text-center">操作</TableHead>
-              <TableHead className="text-center">反馈</TableHead>
+              <TableHead className="text-center">详情</TableHead>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#edf0f1]">
-            {offers.map((offer, index) => {
-              const available = isOfferAvailable(offer);
-              const sharedAccess = isSharedAccessOffer(offer);
-              const collectorGroup = merchantCollectorGroup(offer.collectorKind);
-              const sourcePlatform = merchantSourcePlatform({
-                collectorKind: offer.collectorKind,
-                sourceId: offer.sourceId,
-                sourceName: offer.sourceName,
-                sourceStoreName: offer.sourceStoreName,
-                url: offer.url,
-              });
-
-              return (
-                <tr
-                  key={offerRowKey(offer, index)}
-                  className={`group/row transition hover:bg-[#f7f9f9] ${available ? "" : "bg-[#fbf7f6]"}`}
-                >
-                  <td className="px-5 py-4">
-                    <OfferInventorySummary offer={offer} available={available} />
-                  </td>
-                  <td className="px-4 py-4">
-                    <span className="flex min-w-0 items-center gap-2">
-                      <CollectorSourceLogo group={collectorGroup} platformId={sourcePlatform.id} size="compact" />
-                      <span className="min-w-0 max-w-full">
-                        <OfferMerchantLink offer={offer} mode="table" />
-                        {sourceSecondaryLabel(offer) ? (
-                          <span className="mt-1 block truncate text-xs text-[#5a6061]">{sourceSecondaryLabel(offer)}</span>
-                        ) : null}
-                        <OfferMerchantTimeSummary offer={offer} />
-                      </span>
-                    </span>
-                  </td>
-                  <td className="px-5 py-4">
-                    <OfferSourceTitle title={offer.sourceTitle} mode="table" sharedAccess={sharedAccess} />
-                  </td>
-                  <td className="px-4 py-4">
-                    <OfferPriceCell offer={offer} available={available} />
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-4 text-[#5a6061]">
-                    <OfferRelativeTime value={offerTimestamp(offer)} />
-                  </td>
-                  <td className="px-3 py-3 text-center">
-                    <OfferRiskCell offer={offer} />
-                  </td>
-                  <td className="px-3 py-3 text-center">
-                    <OfferLink offer={offer} available={available} compact onRequestPurchase={onRequestPurchase} />
-                  </td>
-                  <td className="px-3 py-3 text-center">
-                    <OfferFeedbackButton offer={offer} onFeedback={onFeedback} compact />
-                  </td>
-                </tr>
-              );
-            })}
+            {groups.map((group) => group.offerCount > 1 ? (
+              <OfferTableGroup
+                key={group.key}
+                group={group}
+                onFeedback={onFeedback}
+                onRequestPurchase={onRequestPurchase}
+              />
+            ) : (
+              <OfferTableRow
+                key={group.key}
+                offer={group.representative}
+                onFeedback={onFeedback}
+                onRequestPurchase={onRequestPurchase}
+              />
+            ))}
           </tbody>
         </table>
       </div>
     </section>
+  );
+}
+
+function OfferTableGroup({
+  group,
+  onFeedback,
+  onRequestPurchase,
+}: {
+  group: SameTitleOfferGroup<RawOffer>;
+  onFeedback: (offer: RawOffer) => void;
+  onRequestPurchase: (offer: RawOffer) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const offer = group.representative;
+  const available = isOfferAvailable(offer);
+  const sharedAccess = isSharedAccessOffer(offer);
+  const collectorGroup = merchantCollectorGroup(offer.collectorKind);
+  const sourcePlatform = merchantSourcePlatform({
+    collectorKind: offer.collectorKind,
+    sourceId: offer.sourceId,
+    sourceName: offer.sourceName,
+    sourceStoreName: offer.sourceStoreName,
+    url: offer.url,
+  });
+  const detailsId = `offer-group-${offer.id}`;
+
+  return (
+    <>
+      <tr className={`transition hover:bg-[#f7f9f9] ${available ? "" : "bg-[#fbf7f6]"}`}>
+        <td className="px-5 py-4">
+          <span className="flex flex-col items-start gap-1">
+            <OfferStatusBadge available={available} />
+            <span className="whitespace-nowrap text-[0.68rem] font-semibold text-[#5a6061]">
+              {group.availableMerchantCount} 家有货
+            </span>
+          </span>
+        </td>
+        <td className="px-4 py-4">
+          <span className="flex min-w-0 items-center gap-2">
+            <CollectorSourceLogo group={collectorGroup} platformId={sourcePlatform.id} size="compact" />
+            <span className="min-w-0 max-w-full">
+              <OfferMerchantLink offer={offer} mode="table" />
+              <span className="mt-1 block truncate text-xs text-[#5a6061]">最低价渠道 · 共 {group.merchantCount} 家</span>
+            </span>
+          </span>
+        </td>
+        <td className="px-5 py-4">
+          <OfferSourceTitle title={group.title} mode="table" sharedAccess={sharedAccess} />
+          <span className="mt-1 block text-[0.68rem] font-semibold text-[#7a8587]">同名报价 {group.offerCount} 条</span>
+        </td>
+        <td className="px-4 py-4">
+          <span className="block text-lg font-bold tabular-nums text-[#202829]">
+            {formatCurrency(offer.price, offer.currency)} <span className="text-xs font-semibold text-[#5a6061]">起</span>
+          </span>
+          <OfferPurchaseTerms offer={offer} available={available} className="mt-1" />
+        </td>
+        <td className="whitespace-nowrap px-4 py-4 text-[#5a6061]">
+          <OfferRelativeTime value={group.latestAt} />
+        </td>
+        <td className="px-3 py-3 text-center">
+          {group.riskMerchantCount > 0 ? (
+            <span className="inline-flex h-8 items-center gap-1 whitespace-nowrap rounded-full bg-[#fff7df] px-2.5 text-xs font-semibold text-[#8a5a10] ring-1 ring-[#efd38a]">
+              <AlertTriangle size={13} />
+              {group.riskMerchantCount} 家风险
+            </span>
+          ) : <span aria-hidden="true" className="block h-8" />}
+        </td>
+        <td className="px-3 py-3 text-center">
+          <OfferLink offer={offer} available={available} compact onRequestPurchase={onRequestPurchase} />
+        </td>
+        <td className="px-3 py-3 text-center">
+          <button
+            type="button"
+            onClick={() => setExpanded((current) => !current)}
+            aria-expanded={expanded}
+            aria-controls={detailsId}
+            className="inline-flex h-9 min-w-[76px] items-center justify-center gap-1 rounded-full bg-[#e4e9ea] px-3 text-xs font-semibold text-[#2d3435] transition hover:bg-[#dde4e5] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#47657a]"
+          >
+            {expanded ? "收起" : `${group.offerCount} 条`}
+            <ChevronDown size={14} className={`transition-transform ${expanded ? "rotate-180" : ""}`} />
+          </button>
+        </td>
+      </tr>
+      {expanded ? group.items.map((item, index) => (
+        <OfferTableRow
+          key={offerRowKey(item, index)}
+          offer={item}
+          onFeedback={onFeedback}
+          onRequestPurchase={onRequestPurchase}
+          grouped
+          rowId={index === 0 ? detailsId : undefined}
+        />
+      )) : null}
+    </>
+  );
+}
+
+function OfferTableRow({
+  offer,
+  onFeedback,
+  onRequestPurchase,
+  grouped = false,
+  rowId,
+}: {
+  offer: RawOffer;
+  onFeedback: (offer: RawOffer) => void;
+  onRequestPurchase: (offer: RawOffer) => void;
+  grouped?: boolean;
+  rowId?: string;
+}) {
+  const available = isOfferAvailable(offer);
+  const sharedAccess = isSharedAccessOffer(offer);
+  const collectorGroup = merchantCollectorGroup(offer.collectorKind);
+  const sourcePlatform = merchantSourcePlatform({
+    collectorKind: offer.collectorKind,
+    sourceId: offer.sourceId,
+    sourceName: offer.sourceName,
+    sourceStoreName: offer.sourceStoreName,
+    url: offer.url,
+  });
+
+  return (
+    <tr
+      id={rowId}
+      className={`group/row transition hover:bg-[#f7f9f9] ${grouped ? "bg-[#fbfcfc]" : available ? "" : "bg-[#fbf7f6]"}`}
+    >
+      <td className="px-5 py-4"><OfferInventorySummary offer={offer} available={available} /></td>
+      <td className="px-4 py-4">
+        <span className="flex min-w-0 items-center gap-2">
+          <CollectorSourceLogo group={collectorGroup} platformId={sourcePlatform.id} size="compact" />
+          <span className="min-w-0 max-w-full">
+            <OfferMerchantLink offer={offer} mode="table" />
+            {sourceSecondaryLabel(offer) ? <span className="mt-1 block truncate text-xs text-[#5a6061]">{sourceSecondaryLabel(offer)}</span> : null}
+            <OfferMerchantTimeSummary offer={offer} />
+          </span>
+        </span>
+      </td>
+      <td className="px-5 py-4"><OfferSourceTitle title={offer.sourceTitle} mode="table" sharedAccess={sharedAccess} /></td>
+      <td className="px-4 py-4"><OfferPriceCell offer={offer} available={available} /></td>
+      <td className="whitespace-nowrap px-4 py-4 text-[#5a6061]"><OfferRelativeTime value={offerTimestamp(offer)} /></td>
+      <td className="px-3 py-3 text-center"><OfferRiskCell offer={offer} /></td>
+      <td className="px-3 py-3 text-center"><OfferLink offer={offer} available={available} compact onRequestPurchase={onRequestPurchase} /></td>
+      <td className="px-3 py-3 text-center"><OfferFeedbackButton offer={offer} onFeedback={onFeedback} compact /></td>
+    </tr>
   );
 }
 
@@ -1603,6 +1721,92 @@ function OfferListItem({
         </div>
       </div>
     </article>
+  );
+}
+
+function OfferGroupListItem({
+  group,
+  onFeedback,
+  onRequestPurchase,
+}: {
+  group: SameTitleOfferGroup<RawOffer>;
+  onFeedback: (offer: RawOffer) => void;
+  onRequestPurchase: (offer: RawOffer) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const offer = group.representative;
+  const available = isOfferAvailable(offer);
+  const sharedAccess = isSharedAccessOffer(offer);
+  const collectorGroup = merchantCollectorGroup(offer.collectorKind);
+  const sourcePlatform = merchantSourcePlatform({
+    collectorKind: offer.collectorKind,
+    sourceId: offer.sourceId,
+    sourceName: offer.sourceName,
+    sourceStoreName: offer.sourceStoreName,
+    url: offer.url,
+  });
+  const detailsId = `mobile-offer-group-${offer.id}`;
+
+  return (
+    <section className="min-w-0">
+      <article className={`min-w-0 rounded-lg px-4 py-3.5 ring-1 ${available ? "bg-white ring-[#adb3b4]/15" : "bg-[#fbf7f6] ring-[#ead8d5]"}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <OfferSourceTitle title={group.title} mode="card" sharedAccess={sharedAccess} />
+            <div className="mt-2 flex min-w-0 items-center gap-2">
+              <CollectorSourceLogo group={collectorGroup} platformId={sourcePlatform.id} size="compact" />
+              <div className="min-w-0">
+                <OfferMerchantLink offer={offer} mode="card" />
+                <p className="mt-0.5 truncate text-xs text-[#5a6061]">最低价渠道 · 共 {group.merchantCount} 家</p>
+              </div>
+            </div>
+          </div>
+          <OfferStatusBadge available={available} />
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-semibold text-[#5a6061]">
+          <span>{group.availableMerchantCount} 家有货</span>
+          <span aria-hidden="true">·</span>
+          <span>{group.offerCount} 条报价</span>
+          {group.riskMerchantCount > 0 ? (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="text-[#8a5a10]">{group.riskMerchantCount} 家风险</span>
+            </>
+          ) : null}
+        </div>
+        <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
+          <div className="min-w-0">
+            <p className={`text-2xl font-bold leading-none tracking-normal tabular-nums ${available ? "text-[#202829]" : "text-[#9b3328]"}`}>
+              {formatCurrency(offer.price, offer.currency)} <span className="text-xs font-semibold text-[#5a6061]">起</span>
+            </p>
+            <p className="mt-1 text-xs text-[#5a6061]"><OfferRelativeTime value={group.latestAt} /></p>
+          </div>
+          <OfferLink offer={offer} available={available} compact onRequestPurchase={onRequestPurchase} />
+        </div>
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          className="mt-3 inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-[#e4e9ea] px-3 text-xs font-semibold text-[#2d3435] transition hover:bg-[#dde4e5] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#47657a]"
+        >
+          {expanded ? "收起全部报价" : `查看全部 ${group.offerCount} 条报价`}
+          <ChevronDown size={14} className={`transition-transform ${expanded ? "rotate-180" : ""}`} />
+        </button>
+      </article>
+      {expanded ? (
+        <div id={detailsId} className="ml-3 mt-2 grid gap-2 border-l border-[#dfe4e5] pl-3">
+          {group.items.map((item, index) => (
+            <OfferListItem
+              key={offerRowKey(item, index)}
+              offer={item}
+              onFeedback={onFeedback}
+              onRequestPurchase={onRequestPurchase}
+            />
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -3218,7 +3422,7 @@ function sourceSecondaryLabel(offer: RawOffer): string | null {
   return sourceName;
 }
 
-function OfferMerchantLink({ offer, mode }: { offer: RawOffer; mode: "table" | "card" }) {
+export function OfferMerchantLink({ offer, mode }: { offer: RawOffer; mode: "table" | "card" }) {
   const label = sourceLabel(offer);
   const shopUrl = safeExternalShopUrl(rewriteLdxpUrlHost(offer.shopUrl) || offer.shopUrl);
   const className = mode === "table"

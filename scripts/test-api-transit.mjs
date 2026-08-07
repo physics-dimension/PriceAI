@@ -94,6 +94,25 @@ assert.doesNotMatch(leaseCliOutput, /ReferenceError:\s*env is not defined/, "CLI
 assert.match(leaseCliOutput, /fetch failed|ECONNREFUSED|bad port/i, "Lease smoke must reach the Supabase client without touching a real project.");
 
 const transitSourceConfig = JSON.parse(readFileSync(new URL("../config/api-transit-sources.json", import.meta.url), "utf8"));
+const configuredAcsGatewaySource = transitSourceConfig.find((source) => source.id === "acsgw-top");
+assert.ok(configuredAcsGatewaySource, "ACS Gateway must stay saved as an API transit draft source.");
+assert.equal(configuredAcsGatewaySource.collectorKind, "ai_transit_snapshot");
+assert.equal(configuredAcsGatewaySource.stationSystem, "custom");
+assert.equal(configuredAcsGatewaySource.websiteUrl, "https://acsgw.top/");
+assert.equal(configuredAcsGatewaySource.pricingUrl, "https://acsgw.top/.well-known/ai-transit.json");
+assert.equal(configuredAcsGatewaySource.pricingEndpointUrl, "https://acsgw.top/api/public/transit/v1/snapshot");
+assert.equal(configuredAcsGatewaySource.monitorUrl, "https://acsgw.top/status");
+assert.equal(configuredAcsGatewaySource.monitorEndpointUrl, "https://acsgw.top/api/public/transit/v1/status");
+assert.equal(configuredAcsGatewaySource.rechargeRatio, "1:1");
+assert.equal(configuredAcsGatewaySource.autoPublish, false);
+assert.equal(configuredAcsGatewaySource.operatorType, "company");
+assert.equal(configuredAcsGatewaySource.invoiceSupport, "supported");
+assert.match(configuredAcsGatewaySource.refundPolicy, /3%/);
+assert.ok(
+  configuredAcsGatewaySource.adminNote.includes("Codex Plus 0.2") &&
+    configuredAcsGatewaySource.adminNote.includes("autoPublish=false"),
+  "ACS Gateway 后台备注必须保留站长倍率口径并明确保持待审核草稿。",
+);
 const configuredRtocSource = transitSourceConfig.find((source) => source.id === "ai-rtoc-cc");
 assert.ok(configuredRtocSource, "RTOC AI must stay in API transit public collection sources.");
 assert.equal(configuredRtocSource.collectorKind, "ai_transit_snapshot");
@@ -1728,6 +1747,86 @@ assert.equal(aiTransitImage.cache_hit_sample_tokens, 0);
 assert.equal(aiTransitSnapshot.availabilitySamples.length, 4);
 assert.equal(aiTransitSnapshot.station.availability_seven_day_rate, 0.965);
 assert.equal(aiTransitSnapshot.station.availability_seven_day_samples, 42);
+
+const acsSnapshot = {
+  schema_version: "acs.public-transit.v1",
+  generated_at: "2026-08-07T08:48:52Z",
+  billing: { minimum_recharge_cny: 5 },
+  models: [
+    {
+      id: "gpt-5.6-sol",
+      input_price_per_million: 5,
+      output_price_per_million: 30,
+      cache_read_price_per_million: 0.5,
+      cache_write_price_per_million: 6.25,
+    },
+    {
+      id: "claude-opus-4-6",
+      input_price_per_million: 5,
+      output_price_per_million: 25,
+      cache_read_price_per_million: 0.5,
+      cache_write_price_per_million: 6.25,
+    },
+  ],
+};
+const acsStatus = {
+  code: 200,
+  data: {
+    generated_at: "2026-08-07T08:50:58Z",
+    groups: [
+      {
+        display_name: "Codex(Pro号池1)",
+        multiplier: 0.35,
+        status: "normal",
+        supported_models: ["gpt-5.6-sol"],
+        sample_count: 4503,
+        success_rate: 1,
+        uptime: 100,
+        avg_first_token_latency_ms: 1988,
+        timeline: [
+          { date: "2026-08-07T08:00:00Z", status: "normal", has_data: true },
+          { date: "2026-08-07T07:00:00Z", status: "normal", has_data: false },
+        ],
+      },
+      {
+        display_name: "claude(max限制客户端)",
+        multiplier: 1.25,
+        status: "normal",
+        supported_models: ["claude-opus-4-6"],
+        sample_count: 0,
+        success_rate: 1,
+        uptime: 100,
+        avg_first_token_latency_ms: 0,
+        timeline: [],
+      },
+    ],
+  },
+};
+const adaptedAcsSnapshot = __test.adaptAcsPublicTransitSnapshot(acsSnapshot, acsStatus);
+const parsedAcsSnapshot = __test.parsePricingPayload(
+  configuredAcsGatewaySource,
+  adaptedAcsSnapshot,
+  "2026-08-07T08:51:00Z",
+);
+assert.equal(adaptedAcsSnapshot.schema_version, "acs.public-transit.v1");
+assert.equal(adaptedAcsSnapshot.system, "custom");
+assert.equal(parsedAcsSnapshot.offers.length, 2);
+assert.equal(parsedAcsSnapshot.station.published, false);
+assert.equal(parsedAcsSnapshot.station.data_status, "pending_review");
+const acsCodexOffer = parsedAcsSnapshot.offers.find((offer) => offer.standard_model === "GPT 5.6 Sol");
+assert.equal(acsCodexOffer.group_name, "Codex(Pro号池1)");
+assert.equal(acsCodexOffer.model_multiplier, 0.35);
+assert.equal(acsCodexOffer.status, "needs_review");
+assert.equal(acsCodexOffer.availability_seven_day_rate, 1);
+assert.equal(acsCodexOffer.availability_seven_day_samples, 60);
+assert.equal(acsCodexOffer.availability_source_type, "public_status");
+assert.equal(parsedAcsSnapshot.availabilitySamples.length, 2);
+const acsClaudeOffer = parsedAcsSnapshot.offers.find((offer) => offer.standard_model === "Claude Opus 4.6");
+assert.equal(acsClaudeOffer.model_multiplier, 1.25);
+assert.equal(acsClaudeOffer.availability_seven_day_samples, 0);
+assert.equal(acsClaudeOffer.availability_seven_day_rate, null);
+assert.equal(acsClaudeOffer.availability_latest_latency_ms, null);
+assert.equal(acsClaudeOffer.price_source, "ACS 公开快照");
 assert.equal(aiTransitSnapshot.station.availability_latest_latency_ms, 1985);
 assert.equal(aiTransitSnapshot.station.availability_avg_latency_7d_ms, 1005);
 

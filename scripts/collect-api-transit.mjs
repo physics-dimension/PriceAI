@@ -551,6 +551,10 @@ async function fetchSupplementalSnapshotPayload(source, options) {
 
 function applyAvailabilityPayloadToParsedRows(source, parsed, payload, collectedAt) {
   if (!payload) return;
+  if (isAcsPublicTransitSnapshotPayload(parsed.acsSnapshot)) {
+    applyAcsPublicTransitStatus(source, parsed, payload, collectedAt);
+    return;
+  }
   if (isZivvModelHubSource(source)) {
     applyZivvStatusAvailability(source, parsed, payload, collectedAt);
     return;
@@ -574,6 +578,9 @@ function parsePricingPayload(source, payload, collectedAt) {
     return parseZivvModelHubPayload(source, payload, collectedAt);
   }
   if (isAiTransitSnapshotSource(source)) {
+    if (isAcsPublicTransitSnapshotPayload(payload) && !Array.isArray(payload?.groups)) {
+      return parseAcsPublicTransitSnapshotPayload(source, payload, collectedAt);
+    }
     return parseAiTransitSnapshotPayload(source, payload, collectedAt);
   }
 
@@ -602,6 +609,163 @@ function parsePricingPayload(source, payload, collectedAt) {
     }),
     offers: deduped,
   };
+}
+
+function isAcsPublicTransitSnapshotPayload(payload) {
+  return stringOrNull(payload?.schema_version) === "acs.public-transit.v1";
+}
+
+function parseAcsPublicTransitSnapshotPayload(source, payload, collectedAt) {
+  const models = Array.isArray(payload?.models) ? payload.models : [];
+  const generatedAt = stringOrNull(payload?.generated_at) || collectedAt;
+  const collectionError = "ACS 公开快照需结合公开状态接口的当前分组倍率生成报价。";
+
+  return {
+    modelCount: models.length,
+    collectionError,
+    acsSnapshot: payload,
+    station: buildStationRow(source, collectedAt, {
+      status: "partial",
+      offerCount: 0,
+      meta: { generated_at: generatedAt },
+      collectionError,
+      minimumTopUp: numberValue(payload?.billing?.minimum_recharge_cny),
+      availability: {
+        rate: null,
+        samples: 0,
+        firstCheckedAt: null,
+        lastCheckedAt: generatedAt,
+        note: "ACS 公开快照已返回模型与套餐；当前分组倍率和监测样本需由公开状态接口补充，非 PriceAI API Key 实测。",
+        ...availabilitySourceFields(source, AVAILABILITY_SOURCES.publicModelCatalog),
+      },
+    }),
+    offers: [],
+  };
+}
+
+function applyAcsPublicTransitStatus(source, parsed, statusPayload, collectedAt) {
+  const adapted = adaptAcsPublicTransitSnapshot(parsed.acsSnapshot, statusPayload);
+  const next = parseAiTransitSnapshotPayload(source, adapted, collectedAt);
+  parsed.modelCount = next.modelCount;
+  parsed.collectionError = next.collectionError;
+  parsed.station = next.station;
+  parsed.offers = next.offers;
+  parsed.availabilitySamples = next.availabilitySamples;
+}
+
+function adaptAcsPublicTransitSnapshot(snapshot, statusPayload) {
+  if (!isAcsPublicTransitSnapshotPayload(snapshot)) {
+    throw new Error("ACS 公开价格快照 schema 不受支持。");
+  }
+
+  const status = statusPayload?.data && typeof statusPayload.data === "object"
+    ? statusPayload.data
+    : statusPayload;
+  const statusGroups = Array.isArray(status?.groups) ? status.groups : [];
+  const models = Array.isArray(snapshot?.models) ? snapshot.models : [];
+  const modelById = new Map(
+    models.map((model) => [stringOrNull(model?.id), model]).filter(([id]) => id),
+  );
+
+  const groups = statusGroups
+    .map((group) => {
+      const rawModels = Array.isArray(group?.supported_models) && group.supported_models.length
+        ? group.supported_models
+        : Array.isArray(group?.model_names) ? group.model_names : [];
+      const groupModels = rawModels
+        .map((modelId) => modelById.get(stringOrNull(modelId)))
+        .filter(Boolean)
+        .map((model) => ({
+          standard_model: stringOrNull(model.id),
+          raw_model: stringOrNull(model.id),
+          billing_mode: model.image_price_per_image_usd ? "per_request" : "token",
+          price: acsPublicTransitModelPrice(model),
+          source: {
+            upstream_type: "first_party_pool",
+            account_pool_type: inferAccountPool(group?.display_name),
+            disclosure: "站长提交为自建号池；当前倍率与监测数据来自 ACS Gateway 公开状态接口。",
+          },
+          acs_model: model,
+        }));
+      return {
+        name: stringOrNull(group?.display_name) || "default",
+        rate_multiplier: numberValue(group?.multiplier),
+        models: groupModels,
+        acs_status: group,
+      };
+    })
+    .filter((group) => group.rate_multiplier !== null && group.rate_multiplier > 0 && group.models.length);
+
+  if (!groups.length) {
+    throw new Error("ACS 公开状态接口未返回可识别的分组倍率与模型映射。");
+  }
+
+  return {
+    schema_version: snapshot.schema_version,
+    system: "custom",
+    generated_at: stringOrNull(status?.generated_at) || stringOrNull(snapshot?.generated_at),
+    billing: {
+      recharge_ratio: "1:1",
+      recharge_multiplier: 1,
+      minimum_top_up: numberValue(snapshot?.billing?.minimum_recharge_cny),
+    },
+    disclosure: {
+      upstream_type: "first_party_pool",
+      account_pool_type: "mixed",
+    },
+    groups,
+    monitoring: groups.map((group) => acsPublicTransitMonitoringGroup(group)),
+    acs_snapshot: snapshot,
+  };
+}
+
+function acsPublicTransitModelPrice(model) {
+  return {
+    input_usd_per_token: perMillionToPerToken(model?.input_price_per_million),
+    output_usd_per_token: perMillionToPerToken(model?.output_price_per_million),
+    cache_read_usd_per_token: perMillionToPerToken(model?.cache_read_price_per_million),
+    cache_write_usd_per_token: perMillionToPerToken(model?.cache_write_price_per_million),
+    per_request_usd: numberValue(model?.image_price_per_image_usd),
+  };
+}
+
+function perMillionToPerToken(value) {
+  const amount = numberValue(value);
+  return amount === null ? null : amount / 1_000_000;
+}
+
+function acsPublicTransitMonitoringGroup(group) {
+  const status = group.acs_status || {};
+  const primaryModel = group.models.find((model) => standardizeModelName(model?.raw_model))?.raw_model || null;
+  const timeline = (Array.isArray(status.timeline) ? status.timeline : [])
+    .filter((point) => point?.has_data === true)
+    .map((point) => ({
+      status: String(point?.status || "").toLowerCase() === "normal" ? "operational" : "error",
+      checked_at: stringOrNull(point?.date),
+    }));
+  const sampleCount = integerValue(status.sample_count);
+  const hasSamples = (sampleCount !== null && sampleCount > 0) || timeline.length > 0;
+  const rate = hasSamples
+    ? numberValue(status.uptime) ?? multiplyNullable(numberValue(status.success_rate), 100)
+    : null;
+  const latency = hasSamples ? integerValue(status.avg_first_token_latency_ms) : null;
+
+  return {
+    name: group.name,
+    group_name: group.name,
+    primary_model: primaryModel,
+    primary_status: String(status.status || "").toLowerCase() === "normal" ? "operational" : "unknown",
+    availability_7d: rate,
+    sample_count_7d: sampleCount,
+    latest_latency_ms: latency,
+    avg_latency_7d_ms: latency,
+    last_checked_at: stringOrNull(status.generated_at),
+    timeline,
+  };
+}
+
+function publicTransitSnapshotLabel(payload) {
+  return isAcsPublicTransitSnapshotPayload(payload) ? "ACS 公开快照" : "ai-transit 公开快照";
 }
 
 function parseOneHopPublicModelsPayload(source, payload, collectedAt) {
@@ -1004,7 +1168,7 @@ function buildAiTransitSnapshotOfferRow({
     samples: 0,
     firstCheckedAt: null,
     lastCheckedAt: generatedAt,
-    note: "ai-transit 公开快照已返回价格；该模型暂无公开监测样本，非 PriceAI API Key 实测。",
+    note: `${publicTransitSnapshotLabel(payload)}已返回价格；该模型暂无公开监测样本，非 PriceAI API Key 实测。`,
     ...availabilitySourceFields(source, AVAILABILITY_SOURCES.publicModelCatalog),
   };
   const availabilitySource = availability || fallbackAvailability;
@@ -1033,7 +1197,7 @@ function buildAiTransitSnapshotOfferRow({
     currency: "CNY",
     account_pool: aiTransitAccountPool({ payload, model, groupName, rawGroupName, sourceText }),
     channel_type: aiTransitChannelType({ payload, model, sourceText }),
-    price_source: "ai-transit 公开快照",
+    price_source: publicTransitSnapshotLabel(payload),
     source_url: source.pricingEndpointUrl,
     availability_seven_day_rate: availabilitySource.rate,
     availability_seven_day_samples: availabilitySource.samples,
@@ -1579,7 +1743,7 @@ function summarizeAiTransitSnapshotAvailability(availabilityIndex, availabilityS
       samples: 0,
       firstCheckedAt: null,
       lastCheckedAt: generatedAt,
-      note: "ai-transit 快照暂未返回公开监测样本；非 PriceAI API Key 实测。",
+      note: `${publicTransitSnapshotLabel(payload)}暂未返回公开监测样本；非 PriceAI API Key 实测。`,
       ...availabilitySourceFields(source, AVAILABILITY_SOURCES.publicModelCatalog),
     };
   }
@@ -1600,7 +1764,7 @@ function summarizeAiTransitSnapshotAvailability(availabilityIndex, availabilityS
       availabilityValues.map((item) => item.latestLatencyMs).filter((value) => value !== null && value !== undefined).at(0) ??
       null,
     avgLatency7dMs: averageValue(availabilityValues.map((item) => item.avgLatency7dMs)) ?? averageLatencyFromSamples(summarySamples),
-    note: "ai-transit 公开快照监测汇总；该口径来自站点公开监测，不等同 PriceAI API Key 实测。",
+    note: `${publicTransitSnapshotLabel(payload)}监测汇总；该口径来自站点公开监测，不等同 PriceAI API Key 实测。`,
     ...availabilitySourceFields(source, AVAILABILITY_SOURCES.publicStatus),
   };
 }
@@ -4934,6 +5098,7 @@ function errorMessage(error) {
 }
 
 export const __test = {
+  adaptAcsPublicTransitSnapshot,
   adaptNewApiTransitSnapshot,
   buildAvailabilitySampleRow,
   collectSuccessfulRefreshStationIds,

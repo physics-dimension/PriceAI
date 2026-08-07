@@ -1,5 +1,61 @@
 [
   {
+    "id": "acsgw-top",
+    "name": "ACS Gateway",
+    "websiteUrl": "https://acsgw.top/",
+    "apiBaseUrl": "https://acsgw.top/v1",
+    "pricingUrl": "https://acsgw.top/.well-known/ai-transit.json",
+    "pricingEndpointUrl": "https://acsgw.top/api/public/transit/v1/snapshot",
+    "monitorUrl": "https://acsgw.top/status",
+    "monitorEndpointUrl": "https://acsgw.top/api/public/transit/v1/status",
+    "collectorKind": "ai_transit_snapshot",
+    "stationSystem": "custom",
+    "rechargeRatio": "1:1",
+    "autoPublish": false,
+    "commercialRelation": "none",
+    "operatorType": "company",
+    "invoiceSupport": "supported",
+    "channelTypes": ["first_party_pool"],
+    "accountPools": ["max", "pro", "plus"],
+    "paymentMethods": ["人民币支付"],
+    "minimumTopUp": 5,
+    "balanceExpiry": "长期有效",
+    "supportChannels": ["企业微信：https://work.weixin.qq.com/ca/cawcdeefb6c18d2ef1"],
+    "refundPolicy": "余额随时可退，退款收取 3% 手续费。",
+    "riskLabels": ["insufficient_samples", "pending_feedback"],
+    "summary": "ACS Gateway 为自研 API 网关，公开 acs.public-transit.v1 快照和状态接口可读取模型基础价格、当前分组倍率与 7 日站方监测；站长提交公司主体、自建号池、1:1 充值、支持 13% 专票。当前先作为后台待审核草稿保存，不进入前台公开展示。",
+    "strengths": [
+      "公开 /.well-known/ai-transit.json 可发现自研快照和状态接口，模型基础价格、当前分组倍率及监测数据可结构化采集。",
+      "公开状态接口当前确认 Codex Pro 0.35 倍率，并提供 7 日请求量、成功率、首 Token 延迟与时间线。",
+      "站长提交公司主体、支持 13% 专票、余额可退和企业微信售后入口。"
+    ],
+    "cautions": [
+      "站方公开监测来自 ACS Gateway 自有统计，不等同 PriceAI 使用测试 Key 的真实扣费和可用性检测。",
+      "站长提交 Codex Plus 0.2 倍率，但当前公开状态接口未返回 Plus 分组；公开套餐快照中的 Codex Plus 为 0.8 套餐内倍率，口径不同，正式上架前需确认。",
+      "站长提交上线于 4 月、请求数 99,877、用户量 1,212，但未提供截图，且请求量与用户量的 7/30 日统计周期未拆分。",
+      "支持 13% 专票，但开票周期未提供；余额退款收取 3% 手续费。"
+    ],
+    "verificationEvents": [
+      {
+        "id": "acsgw-merchant-submitted-2026-08-07",
+        "source": "merchant",
+        "status": "info",
+        "title": "补充待审核站点资料",
+        "description": "站长提交 ACS Gateway 为自研系统、公司主体、自建号池、1:1 充值，主流倍率为 Codex Plus 0.2、Codex Pro 0.35、Claude Max 1.25；支持 13% 专票，余额可退并收取 3% 手续费。",
+        "happenedAt": "2026-08-07T08:47:49.000Z"
+      },
+      {
+        "id": "acsgw-public-transit-v1-2026-08-07",
+        "source": "priceai",
+        "status": "success",
+        "title": "ACS 自研公开快照可读取",
+        "description": "2026-08-07 检查 /.well-known/ai-transit.json 可发现 acs.public-transit.v1 快照与状态接口；快照返回 3 个套餐和 21 个模型，状态接口返回 Codex Pro 0.35 与 Claude Max 1.25 当前分组倍率。",
+        "happenedAt": "2026-08-07T08:50:58.000Z"
+      }
+    ],
+    "adminNote": "用户提交口径：ACS Gateway / 自研系统 / 公司主体 / 自建号池 / 1:1 充值 / Codex Plus 0.2、Codex Pro 0.35、Claude Max 1.25 / 支持 13% 专票 / 余额随时可退但收取 3% 手续费 / 企业微信售后。运营规模由站长自报为 4 月上线、请求数 99,877、用户量 1,212，未附截图且未拆分 7/30 日周期。PriceAI 2026-08-07 核验：acs.public-transit.v1 快照返回 3 个套餐和 21 个模型；公开状态接口确认 Codex Pro 0.35（4,503 请求样本）与 Claude Max 1.25（0 请求样本），未返回 Codex Plus 0.2；套餐快照中的 Codex Plus 0.8 属于不同套餐口径，正式上架前需确认。当前 autoPublish=false，仅进入后台待审核草稿，不上前台。"
+  },
+  {
     "id": "zivv-pro",
     "name": "Zivv",
     "websiteUrl": "https://zivv.pro/",

@@ -437,13 +437,14 @@
   {
     "id": "api-1pkapi-com",
     "name": "皓悦 API",
-    "websiteUrl": "https://api.1pkapi.com/",
-    "apiBaseUrl": "https://api.1pkapi.com/v1",
-    "pricingUrl": "https://api.1pkapi.com/public/transit",
-    "pricingEndpointUrl": "https://api.1pkapi.com/api/public/transit/v1/snapshot",
-    "monitorUrl": "https://api.1pkapi.com/public/transit?view=monitoring",
+    "websiteUrl": "https://1pkapi.com/",
+    "apiBaseUrl": "https://1pkapi.com/v1",
+    "pricingUrl": "https://1pkapi.com/public/transit",
+    "pricingEndpointUrl": "https://1pkapi.com/api/public/transit/v1/snapshot",
+    "discoveryUrl": "https://1pkapi.com/.well-known/ai-transit.json",
+    "monitorUrl": "https://1pkapi.com/public/transit?view=monitoring",
     "collectorKind": "ai_transit_snapshot",
-    "stationSystem": "sub_to_api",
+    "stationSystem": "custom",
     "rechargeRatio": "1:1",
     "autoPublish": false,
     "commercialRelation": "none",
@@ -453,10 +454,10 @@
     "accountPools": ["kiro", "pro", "plus", "mixed", "undisclosed"],
     "supportChannels": ["TG群：https://t.me/+s485tyl24600YzAx"],
     "riskLabels": ["mixed_pool", "undisclosed_upstream", "insufficient_samples", "pending_feedback"],
-    "summary": "皓悦 API 使用 Sub2API 系统，公开 ai-transit.v1 快照可读取 Claude、GPT、Plus/Pro 等分组倍率、模型价格、缓存命中率和公开监控时间线；公开资料显示 1:1 充值，当前先作为后台待审核草稿保存，不进入前台公开展示。",
+    "summary": "皓悦 API 当前以 1pkAPI 名称公开，使用 API Gateway 系统；标准 ai-transit.v1 快照可读取 Codex、Claude 等分组倍率、模型价格、缓存命中率和公开监控时间线。公开资料显示 1:1 充值，现有人工发布状态保持不变。",
     "strengths": [
       "公开 /.well-known/ai-transit.json 可发现结构化快照，/api/public/transit/v1/snapshot 返回分组、模型价格、缓存命中率和监控时间线。",
-      "快照无需登录即可读取，包含 7 个分组、47 个公开模型条目，可作为后台持续采集和正式上架前复核的数据备份。"
+      "2026-08-07 新域名快照无需登录即可读取，包含 4 个分组、24 个公开模型，可作为后台持续采集和价格复核的数据来源。"
     ],
     "cautions": [
       "公开监测样本来自皓悦 API 页面，不等同 PriceAI 使用测试 Key 的真实扣费和可用性检测。",
@@ -479,9 +480,17 @@
         "title": "公开页显示 Sub2API 站点资料",
         "description": "2026-07-12 检查 https://api.1pkapi.com/public/transit 返回站点名皓悦 API、public_transit_enabled=true、公开监控入口和 TG 群联系方式。",
         "happenedAt": "2026-07-12T09:56:18.000Z"
+      },
+      {
+        "id": "api-1pkapi-domain-migration-2026-08-07",
+        "source": "priceai",
+        "status": "success",
+        "title": "公开快照迁移到 1pkapi.com",
+        "description": "2026-08-07 检查 https://1pkapi.com/.well-known/ai-transit.json 与标准快照均返回 200；公开名称为 1pkAPI、系统为 API Gateway，当前快照包含 4 个分组、24 个唯一模型及公开监测。旧 api.1pkapi.com 已无法稳定建立 TLS 连接。",
+        "happenedAt": "2026-08-07T10:20:00.000Z"
       }
     ],
-    "adminNote": "用户提交口径：sub2api 系统 / 官网 https://api.1pkapi.com / 公开价格页 https://api.1pkapi.com/public/transit。PriceAI 2026-07-12 读取公开 /.well-known/ai-transit.json 与 /api/public/transit/v1/snapshot 成功，快照显示站点名皓悦 API、1:1 充值、7 个分组、47 个模型条目、公开监控和缓存命中率；当前 autoPublish=false，仅进入后台待审核草稿，不上前台。正式上架前建议补充主体类型、发票、售后/退款、AFF/合作关系、模型来源说明和是否提供测试 Key。"
+    "adminNote": "历史提交口径：皓悦 API / Sub2API / 官网 https://api.1pkapi.com。PriceAI 2026-08-07 核验公开入口已迁移到 https://1pkapi.com，公开名称为 1pkAPI、系统标识为 API Gateway；标准 ai-transit.v1 快照返回 1:1 充值、4 个分组、24 个唯一模型、公开监测和缓存口径。保留皓悦 API 作为当前运营名称，待运营确认是否正式改名。autoPublish=false 继续保留，不自动改变现有人工审核或发布状态；仍需补充主体类型、发票、售后/退款、AFF 或合作关系和测试 Key。"
   },
   {
     "id": "onepig123-com",
@@ -887,7 +896,7 @@
       "站长提交 Codex 0.045、CCMax 0.75；2026-08-03 公开接口当前显示 gpt-特惠 0.08、gpt-plus 0.12、gpt-pro 0.20、claude max 号池 0.85，需继续区分活动价、专属分组和模型倍率口径。",
       "站长自报已运营 1 个月、每日 30b，但本次未附截图，运营规模与单位仍待人工核验。",
       "公开监测为站方 performance summary 与真实流量聚合快照，非 PriceAI API Key 实测；/v1/models 需要 API Key。",
-      "transit 补充快照数据完整，但 schema_version=1.0、对象型 groups、顶层 models 和对象型 monitoring.models 不符合 PriceAI 现有 ai-transit.v1 数组契约；当前通过显式兼容层读取，不伪装成标准快照。"
+      "transit 补充快照已于 2026-08-07 升级为标准 ai-transit.v1 数组契约；PriceAI 同时保留旧 schema_version=1.0 方言兼容，站方回滚时仍可读取。"
     ],
     "verificationEvents": [
       {
@@ -929,9 +938,17 @@
         "title": "公开 transit 发现文档与补充快照可读取",
         "description": "2026-08-03 检查 /.well-known/ai-transit.json 与 /api/public/transit/v1/snapshot 均返回 200，核验时快照与 /api/pricing 的模型全集及 9 个分组一致，另含模型级近 24 小时真实流量聚合监测；模型和监测项数量会随站方上下架与流量窗口动态变化。该 schema 为站方 1.0 方言，PriceAI 通过兼容层读取，不视为标准 ai-transit.v1 或 API Key 实测。",
         "happenedAt": "2026-08-03T05:50:02.000Z"
+      },
+      {
+        "id": "dragonapi-ai-transit-v1-upgrade-2026-08-07",
+        "source": "priceai",
+        "status": "success",
+        "title": "补充快照升级为标准 ai-transit.v1",
+        "description": "2026-08-07 核验补充快照已升级为标准 ai-transit.v1 数组结构；与 /api/pricing 同为 91 个模型、9 个分组，并补充缓存、分组监测、时间线和 self_hosted 来源披露。PriceAI 保留 /api/pricing 主价格链路，标准快照仅用于一致性校验和公开证据补充。",
+        "happenedAt": "2026-08-07T10:15:00.000Z"
       }
     ],
-    "adminNote": "用户提交名称为 DraonAPI；PriceAI 按 /api/status 与域名核验后以 DragonAPI 作为标准站点名。用户提交口径：New API 系统 / 官网 https://newapi.dragon3api.com / 公开价格页 https://newapi.dragon3api.com/pricing / 公开监测页 https://newapi.dragon3api.com/status / 已运营 1 个月 / 每日 30b / 1:1 充值 / Codex 0.045 / CCMax 0.75 / 自建号池 / 余额可退、联系客服 / 公司主体 / 支持普票、4% 税点、约一个月；本次未附运营与规模截图。PriceAI 2026-08-03 核验：/api/pricing 与 transit 补充快照的模型全集和 9 个分组一致，当前 gpt-特惠 0.08、gpt-plus 0.12、gpt-pro 0.20、claude max 号池 0.85；快照另含模型级近 24 小时真实流量聚合监测和 self_hosted 自建号池声明，具体模型与监测项数量会动态变化。发现文档与快照使用站方 schema_version=1.0 方言，PriceAI 保留 /api/pricing 主链路并通过兼容层补充分组级监测；站方监测非 API Key 实测，/v1/models 仍需 API Key。当前 autoPublish=false，不自动改变既有人工审核与展示状态；仍需确认倍率差异、30b 的统计单位及截图、公司与开票资料、售后入口和测试 Key。"
+    "adminNote": "用户提交名称为 DraonAPI；PriceAI 按 /api/status 与域名核验后以 DragonAPI 作为标准站点名。用户提交口径：New API 系统 / 官网 https://newapi.dragon3api.com / 公开价格页 https://newapi.dragon3api.com/pricing / 公开监测页 https://newapi.dragon3api.com/status / 已运营 1 个月 / 每日 30b / 1:1 充值 / Codex 0.045 / CCMax 0.75 / 自建号池 / 余额可退、联系客服 / 公司主体 / 支持普票、4% 税点、约一个月；本次未附运营与规模截图。PriceAI 2026-08-07 核验：/api/pricing 与标准 ai-transit.v1 补充快照同为 91 个模型、9 个分组，当前 gpt-特惠 0.08、gpt-plus 0.09、gpt-pro 0.20、claude-max 0.90；快照另含缓存、分组监测、时间线和 self_hosted 来源披露。PriceAI 保留 /api/pricing 主价格链路，标准快照用于一致性校验和精确公开证据补充，同时继续兼容旧 schema_version=1.0 方言；站方监测非 API Key 实测，/v1/models 仍需 API Key。当前 autoPublish=false，不自动改变既有人工审核与展示状态；仍需确认倍率差异、30b 的统计单位及截图、公司与开票资料、售后入口和测试 Key。"
   },
   {
     "id": "hejuapi-com",

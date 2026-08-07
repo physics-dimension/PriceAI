@@ -206,11 +206,13 @@ assert.equal(configuredMaofeiSource.autoPublish, true);
 const configuredOnePkapiSource = transitSourceConfig.find((source) => source.id === "api-1pkapi-com");
 assert.ok(configuredOnePkapiSource, "皓悦 API must stay saved as an API transit draft source.");
 assert.equal(configuredOnePkapiSource.collectorKind, "ai_transit_snapshot");
-assert.equal(configuredOnePkapiSource.stationSystem, "sub_to_api");
-assert.equal(configuredOnePkapiSource.websiteUrl, "https://api.1pkapi.com/");
-assert.equal(configuredOnePkapiSource.pricingUrl, "https://api.1pkapi.com/public/transit");
-assert.equal(configuredOnePkapiSource.pricingEndpointUrl, "https://api.1pkapi.com/api/public/transit/v1/snapshot");
-assert.equal(configuredOnePkapiSource.monitorUrl, "https://api.1pkapi.com/public/transit?view=monitoring");
+assert.equal(configuredOnePkapiSource.stationSystem, "custom");
+assert.equal(configuredOnePkapiSource.websiteUrl, "https://1pkapi.com/");
+assert.equal(configuredOnePkapiSource.apiBaseUrl, "https://1pkapi.com/v1");
+assert.equal(configuredOnePkapiSource.pricingUrl, "https://1pkapi.com/public/transit");
+assert.equal(configuredOnePkapiSource.pricingEndpointUrl, "https://1pkapi.com/api/public/transit/v1/snapshot");
+assert.equal(configuredOnePkapiSource.discoveryUrl, "https://1pkapi.com/.well-known/ai-transit.json");
+assert.equal(configuredOnePkapiSource.monitorUrl, "https://1pkapi.com/public/transit?view=monitoring");
 assert.equal(configuredOnePkapiSource.rechargeRatio, "1:1");
 assert.equal(configuredOnePkapiSource.autoPublish, false);
 assert.equal(configuredOnePkapiSource.commercialRelation, "none");
@@ -345,13 +347,13 @@ assert.ok(
 );
 assert.ok(
   configuredDragonapiSource.adminNote.includes("gpt-特惠 0.08") &&
-    configuredDragonapiSource.adminNote.includes("claude max 号池 0.85"),
+    configuredDragonapiSource.adminNote.includes("claude-max 0.90"),
   "DragonAPI 后台备注必须保留公开价格与站长提交口径的差异。",
 );
 assert.ok(
-  configuredDragonapiSource.adminNote.includes("schema_version=1.0") &&
-    configuredDragonapiSource.adminNote.includes("兼容层"),
-  "DragonAPI 后台备注必须说明补充快照协议方言与兼容边界。",
+  configuredDragonapiSource.adminNote.includes("标准 ai-transit.v1") &&
+    configuredDragonapiSource.adminNote.includes("旧 schema_version=1.0 方言"),
+  "DragonAPI 后台备注必须说明标准快照与旧协议方言的兼容边界。",
 );
 assert.ok(
   configuredDragonapiSource.adminNote.includes("autoPublish=false"),
@@ -1333,6 +1335,148 @@ assert.equal(dragonPlusOffer.availability_source_label, "公开 transit 快照")
 assert.equal(dragonPlusOffer.availability_source_url, configuredDragonapiSource.snapshotEndpointUrl);
 assert.equal(dragonPlusOffer.raw_payload.supplemental_transit_snapshot.requests, 700);
 assert.match(dragonPlusOffer.availability_note, /聚合值按 1 个公开状态样本记录/);
+
+const canonicalDragonTransitSnapshotFixture = {
+  schema_version: "ai-transit.v1",
+  system: "new-api",
+  generated_at: "2026-08-07T10:15:00Z",
+  billing: {
+    recharge_ratio: "1 CNY = 1 USD credit",
+    recharge_multiplier: 1,
+  },
+  disclosure: {
+    upstream_type: "self_hosted",
+    account_pool_type: "self_hosted",
+  },
+  groups: [
+    {
+      name: "gpt-plus",
+      rate_multiplier: 0.12,
+      cache_usage: {
+        last_7d: {
+          input_tokens: 100,
+          cache_creation_tokens: 100,
+          cache_read_tokens: 800,
+          cache_hit_rate: 80,
+        },
+      },
+      models: [
+        {
+          standard_model: "gpt-5.5",
+          raw_model: "gpt-5.5",
+          price: {
+            input_usd_per_token: 0.0000006,
+            output_usd_per_token: 0.0000036,
+          },
+          source: {
+            upstream_type: "self_hosted",
+            account_pool_type: "self_hosted",
+          },
+        },
+      ],
+    },
+    {
+      name: "gpt-pro",
+      rate_multiplier: 0.2,
+      models: [
+        {
+          standard_model: "gpt-5.5",
+          raw_model: "gpt-5.5",
+          price: {
+            input_usd_per_token: 0.000001,
+            output_usd_per_token: 0.000006,
+          },
+          source: {
+            upstream_type: "self_hosted",
+            account_pool_type: "self_hosted",
+          },
+        },
+      ],
+    },
+  ],
+  monitoring: [
+    {
+      name: "gpt-plus",
+      group_name: "gpt-plus",
+      primary_model: "gpt-5.5",
+      primary_status: "operational",
+      availability_7d: 0.98,
+      sample_count_7d: 60,
+      latest_latency_ms: 18000,
+      avg_latency_7d_ms: 17000,
+      last_checked_at: "2026-08-07T10:14:00Z",
+      timeline: [
+        { status: "operational", checked_at: "2026-08-07T10:13:00Z", latency_ms: 16000 },
+        { status: "operational", checked_at: "2026-08-07T10:14:00Z", latency_ms: 18000 },
+      ],
+    },
+    {
+      name: "gpt-pro",
+      group_name: "gpt-pro",
+      primary_model: "gpt-5.5",
+      primary_status: "operational",
+      availability_7d: 0.999,
+      sample_count_7d: 60,
+      latest_latency_ms: 19000,
+      avg_latency_7d_ms: 18000,
+      last_checked_at: "2026-08-07T10:14:00Z",
+      timeline: [
+        { status: "operational", checked_at: "2026-08-07T10:13:00Z", latency_ms: 17000 },
+        { status: "operational", checked_at: "2026-08-07T10:14:00Z", latency_ms: 19000 },
+      ],
+    },
+  ],
+  completeness: {
+    warnings: [],
+  },
+};
+const canonicalDragonParsed = __test.parsePricingPayload(
+  configuredDragonapiSource,
+  dragonPrimaryPricingFixture,
+  "2026-08-07T10:15:00Z",
+);
+const canonicalDragonConsistency = __test.applyNewApiSupplementalSnapshot(
+  configuredDragonapiSource,
+  canonicalDragonParsed,
+  dragonPrimaryPricingFixture,
+  canonicalDragonTransitSnapshotFixture,
+  "2026-08-07T10:15:00Z",
+);
+assert.equal(canonicalDragonConsistency.status, "match");
+assert.equal(canonicalDragonConsistency.comparisonMode, "ai_transit_v1_catalog");
+assert.equal(canonicalDragonConsistency.primaryModelCount, 1);
+assert.equal(canonicalDragonConsistency.snapshotModelCount, 1);
+const canonicalDragonPlusOffer = canonicalDragonParsed.offers.find((offer) => offer.group_name === "gpt-plus");
+assert.equal(canonicalDragonPlusOffer.availability_seven_day_rate, 0.98);
+assert.equal(canonicalDragonPlusOffer.availability_seven_day_samples, 60);
+assert.equal(canonicalDragonPlusOffer.availability_match_level, "exact");
+assert.equal(canonicalDragonPlusOffer.channel_type, "first_party_pool");
+assert.equal(canonicalDragonPlusOffer.account_pool, "plus");
+assert.equal(canonicalDragonPlusOffer.cache_hit_rate, 0.8);
+assert.equal(canonicalDragonPlusOffer.cache_hit_sample_tokens, 1000);
+assert.equal(canonicalDragonPlusOffer.raw_payload.supplemental_transit_snapshot.schema_version, "ai-transit.v1");
+assert.ok(canonicalDragonParsed.availabilitySamples.length > 0);
+
+const canonicalDragonMismatch = __test.compareNewApiPricingWithCanonicalTransitSnapshot(
+  dragonPrimaryPricingFixture,
+  {
+    ...canonicalDragonTransitSnapshotFixture,
+    groups: canonicalDragonTransitSnapshotFixture.groups.map((group) =>
+      group.name === "gpt-plus" ? { ...group, rate_multiplier: 0.13 } : group,
+    ),
+  },
+);
+assert.equal(canonicalDragonMismatch.status, "mismatch");
+assert.ok(canonicalDragonMismatch.mismatches.some((message) => message.includes("gpt-plus")));
+
+const supplementalFailureParsed = __test.parsePricingPayload(
+  configuredDragonapiSource,
+  dragonPrimaryPricingFixture,
+  "2026-08-07T10:15:00Z",
+);
+__test.markSupplementalSnapshotFailure(supplementalFailureParsed, "unsupported schema");
+assert.equal(supplementalFailureParsed.station.collection_status, "partial");
+assert.match(supplementalFailureParsed.collectionError, /补充快照采集失败/);
 
 const rtocSnapshotParsed = __test.parsePricingPayload(
   configuredRtocSource,

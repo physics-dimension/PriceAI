@@ -271,9 +271,13 @@ export async function collectApiTransitPrices(options = {}) {
       try {
         supplementalSnapshotPayload = await fetchSupplementalSnapshotPayload(source, sourceOptions);
         if (supplementalSnapshotPayload) {
-          const adaptedSnapshot = adaptNewApiTransitSnapshot(supplementalSnapshotPayload);
-          supplementalSnapshotConsistency = compareNewApiPricingWithTransitSnapshot(payload, adaptedSnapshot.pricing);
-          applyNewApiTransitSnapshotAvailability(source, parsed, adaptedSnapshot, runStartedAt);
+          supplementalSnapshotConsistency = applyNewApiSupplementalSnapshot(
+            source,
+            parsed,
+            payload,
+            supplementalSnapshotPayload,
+            runStartedAt,
+          );
           if (supplementalSnapshotConsistency.status === "mismatch") {
             const warning = newApiTransitSnapshotMismatchMessage(supplementalSnapshotConsistency);
             parsed.collectionError = warning;
@@ -283,9 +287,12 @@ export async function collectApiTransitPrices(options = {}) {
         }
       } catch (error) {
         supplementalSnapshotError = errorMessage(error);
+        markSupplementalSnapshotFailure(parsed, supplementalSnapshotError);
       }
       const runId = stableId("api-transit-run", source.id, runStartedAt);
       const runHasSnapshotMismatch = supplementalSnapshotConsistency?.status === "mismatch";
+      const runHasSupplementalSnapshotError = Boolean(supplementalSnapshotError);
+      const runHasSupplementalSnapshotIssue = runHasSnapshotMismatch || runHasSupplementalSnapshotError;
       parsed.offers = parsed.offers.map(clearUnpricedPreviewModelRates);
       stations.push(parsed.station);
       offers.push(...parsed.offers);
@@ -293,10 +300,10 @@ export async function collectApiTransitPrices(options = {}) {
         id: runId,
         station_id: source.id,
         run_type: "public_pricing",
-        status: parsed.offers.length && !runHasSnapshotMismatch ? "success" : "partial",
+        status: parsed.offers.length && !runHasSupplementalSnapshotIssue ? "success" : "partial",
         model_count: parsed.modelCount,
         offer_count: parsed.offers.length,
-        error_message: parsed.offers.length && !runHasSnapshotMismatch
+        error_message: parsed.offers.length && !runHasSupplementalSnapshotIssue
           ? null
           : parsed.collectionError || "未识别到已支持的标准模型。",
         source_url: source.pricingEndpointUrl,
@@ -2228,6 +2235,155 @@ function adaptNewApiTransitSnapshot(payload) {
   };
 }
 
+function applyNewApiSupplementalSnapshot(source, parsed, primaryPayload, snapshotPayload, collectedAt) {
+  if (isCanonicalAiTransitSnapshotPayload(snapshotPayload)) {
+    const snapshotParsed = parseAiTransitSnapshotPayload(source, snapshotPayload, collectedAt);
+    mergeCanonicalAiTransitSnapshotEvidence(parsed, snapshotParsed);
+    return compareNewApiPricingWithCanonicalTransitSnapshot(primaryPayload, snapshotPayload);
+  }
+
+  const adaptedSnapshot = adaptNewApiTransitSnapshot(snapshotPayload);
+  applyNewApiTransitSnapshotAvailability(source, parsed, adaptedSnapshot, collectedAt);
+  return compareNewApiPricingWithTransitSnapshot(primaryPayload, adaptedSnapshot.pricing);
+}
+
+function isCanonicalAiTransitSnapshotPayload(payload) {
+  return stringOrNull(payload?.schema_version) === "ai-transit.v1" && Array.isArray(payload?.groups);
+}
+
+function mergeCanonicalAiTransitSnapshotEvidence(parsed, snapshotParsed) {
+  const snapshotOffers = new Map((snapshotParsed.offers || []).map((offer) => [offerKey(offer), offer]));
+  const evidenceFields = [
+    "account_pool",
+    "channel_type",
+    "cache_hit_rate",
+    "cache_hit_sample_tokens",
+    "availability_seven_day_rate",
+    "availability_seven_day_samples",
+    "availability_first_checked_at",
+    "availability_last_checked_at",
+    "availability_latest_latency_ms",
+    "availability_avg_latency_7d_ms",
+    "availability_note",
+    "availability_source_type",
+    "availability_source_label",
+    "availability_source_url",
+    "availability_scope",
+    "availability_match_level",
+    "monitoring_scope_id",
+  ];
+
+  for (const offer of parsed.offers || []) {
+    const snapshotOffer = snapshotOffers.get(offerKey(offer));
+    if (!snapshotOffer) continue;
+    for (const field of evidenceFields) offer[field] = snapshotOffer[field];
+    offer.raw_payload = {
+      ...(offer.raw_payload || {}),
+      supplemental_transit_snapshot: snapshotOffer.raw_payload,
+    };
+  }
+
+  const stationEvidenceFields = [
+    "availability_seven_day_rate",
+    "availability_seven_day_samples",
+    "availability_first_checked_at",
+    "availability_last_checked_at",
+    "availability_latest_latency_ms",
+    "availability_avg_latency_7d_ms",
+    "availability_note",
+    "availability_source_type",
+    "availability_source_label",
+    "availability_source_url",
+    "availability_scope",
+    "availability_match_level",
+    "monitoring_scope_id",
+  ];
+  if ((snapshotParsed.station?.availability_seven_day_samples || 0) > 0) {
+    for (const field of stationEvidenceFields) parsed.station[field] = snapshotParsed.station[field];
+  }
+
+  parsed.availabilitySamples = dedupeRowsById([
+    ...(parsed.availabilitySamples || []),
+    ...(snapshotParsed.availabilitySamples || []),
+  ]);
+}
+
+function compareNewApiPricingWithCanonicalTransitSnapshot(primaryPayload, snapshotPayload) {
+  const primaryItems = normalizePricingItems(primaryPayload);
+  const primaryGroups = normalizeGroupRatios(primaryPayload).groups;
+  const snapshotGroups = new Map();
+  const snapshotModelGroups = new Map();
+  const primaryModelGroups = new Map();
+  const mismatches = [];
+
+  for (const group of Array.isArray(snapshotPayload?.groups) ? snapshotPayload.groups : []) {
+    const groupName = stringOrNull(group?.name);
+    if (!groupName) continue;
+    snapshotGroups.set(groupName, { ratio: numberValue(group?.rate_multiplier) });
+    for (const model of Array.isArray(group?.models) ? group.models : []) {
+      const modelName = stringOrNull(model?.raw_model || model?.standard_model);
+      if (!modelName) continue;
+      snapshotModelGroups.set(modelName, new Set([...(snapshotModelGroups.get(modelName) || []), groupName]));
+    }
+  }
+
+  for (const item of primaryItems) {
+    const modelName = stringOrNull(item?.model_name || item?.name);
+    if (!modelName) continue;
+    primaryModelGroups.set(modelName, new Set(normalizedTextList(item?.enable_groups)));
+  }
+
+  if (primaryModelGroups.size !== snapshotModelGroups.size) {
+    mismatches.push(`模型数量不一致：主价格 ${primaryModelGroups.size}，补充快照 ${snapshotModelGroups.size}`);
+  }
+  if (primaryGroups.size !== snapshotGroups.size) {
+    mismatches.push(`分组数量不一致：主价格 ${primaryGroups.size}，补充快照 ${snapshotGroups.size}`);
+  }
+
+  for (const [name, primaryGroup] of primaryGroups) {
+    const snapshotGroup = snapshotGroups.get(name);
+    if (!snapshotGroup) {
+      mismatches.push(`补充快照缺少分组 ${name}`);
+      continue;
+    }
+    if (!sameNullableNumber(primaryGroup.ratio, snapshotGroup.ratio)) {
+      mismatches.push(`分组 ${name} 倍率不一致：${primaryGroup.ratio} / ${snapshotGroup.ratio}`);
+    }
+  }
+
+  for (const [name, groups] of primaryModelGroups) {
+    const snapshotGroupsForModel = snapshotModelGroups.get(name);
+    if (!snapshotGroupsForModel) {
+      mismatches.push(`补充快照缺少模型 ${name}`);
+      continue;
+    }
+    if ([...groups].sort().join("|") !== [...snapshotGroupsForModel].sort().join("|")) {
+      mismatches.push(`模型 ${name} 的可用分组不一致`);
+    }
+  }
+  for (const name of snapshotModelGroups.keys()) {
+    if (!primaryModelGroups.has(name)) mismatches.push(`主价格缺少补充快照模型 ${name}`);
+  }
+
+  return {
+    status: mismatches.length ? "mismatch" : "match",
+    comparisonMode: "ai_transit_v1_catalog",
+    primaryModelCount: primaryModelGroups.size,
+    snapshotModelCount: snapshotModelGroups.size,
+    primaryGroupCount: primaryGroups.size,
+    snapshotGroupCount: snapshotGroups.size,
+    mismatchCount: mismatches.length,
+    mismatches: mismatches.slice(0, 20),
+  };
+}
+
+function markSupplementalSnapshotFailure(parsed, message) {
+  const warning = `New API 补充快照采集失败：${message}`;
+  parsed.collectionError = [stringOrNull(parsed.collectionError), warning].filter(Boolean).join("；");
+  parsed.station.collection_status = "partial";
+  parsed.station.collection_error = parsed.collectionError;
+}
+
 function compareNewApiPricingWithTransitSnapshot(primaryPayload, snapshotPricing) {
   const primaryItems = normalizePricingItems(primaryPayload);
   const snapshotItems = normalizePricingItems(snapshotPricing);
@@ -3892,6 +4048,7 @@ function normalizeAiTransitChannelType(value) {
   }
   if (normalized === "official") return "official_api";
   if (normalized === "reverse") return "reverse_engineered";
+  if (normalized === "self_hosted") return "first_party_pool";
   return null;
 }
 
@@ -5100,6 +5257,7 @@ function errorMessage(error) {
 export const __test = {
   adaptAcsPublicTransitSnapshot,
   adaptNewApiTransitSnapshot,
+  applyNewApiSupplementalSnapshot,
   buildAvailabilitySampleRow,
   collectSuccessfulRefreshStationIds,
   collectRefreshedOfferKeys,
@@ -5118,6 +5276,8 @@ export const __test = {
   parseOneHopPublicModelsPayload,
   parsePricingPayload,
   compareNewApiPricingWithTransitSnapshot,
+  compareNewApiPricingWithCanonicalTransitSnapshot,
+  markSupplementalSnapshotFailure,
   parseZivvModelHubPayload,
   selectSources,
   standardizeModelName,

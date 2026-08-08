@@ -504,13 +504,25 @@ function CombinedRateCell({
   const fixedPrice = summary && hasTransitFixedPriceSummary(summary)
     ? formatTransitFixedPriceRange(summary)
     : null;
-  const showYuanPerDollar = summary !== null &&
+  const bestSummary = family === "all" && standardModel === "all"
+    ? TRANSIT_TEXT_MODEL_FAMILY_ORDER
+      .map((modelFamily) => comparison.families[modelFamily])
+      .filter((item) => item.combinedRateMin !== null)
+      .sort((left, right) => (left.combinedRateMin ?? Infinity) - (right.combinedRateMin ?? Infinity))[0] ?? null
+    : null;
+  const yuanSummary = summary ?? bestSummary;
+  const showYuanPerDollar = yuanSummary !== null &&
     !fixedPrice &&
-    isDollarTransitModelFamily(summary.family) &&
-    summary.family !== "image" &&
-    summary.family !== "video" &&
+    isDollarTransitModelFamily(yuanSummary.family) &&
     (standardModel === "all" || TRANSIT_STANDARD_MODEL_MODALITY[standardModel] === "text");
   const yuanPerDollarLabel = showYuanPerDollar ? formatYuanPerDollar(rate) : null;
+  const secondaryLabel = fixedPrice
+    ? "人民币固定价"
+    : standardModel !== "all"
+      ? standardModel
+      : summary
+        ? formatMultiplierRange(summary)
+        : bestFamilyLabel(comparison);
   const priceFreshness = getTransitStationPriceFreshness(station, {
     activeFamily: family,
     activeStandardModel: standardModel,
@@ -551,17 +563,14 @@ function CombinedRateCell({
         {fixedPrice || formatRate(rate)}
       </span>
       <div className={`mt-1 text-[10px] font-semibold ${priceFreshness.state === "delayed" ? "text-[#9a5d12]" : "text-[#7f8889]"}`}>
-        {priceFreshness.state === "delayed"
-          ? `价格待更新${priceFreshness.lastVerifiedAt ? ` · ${formatDateShortMinute(priceFreshness.lastVerifiedAt)}` : ""}`
-          : fixedPrice
-            ? "人民币固定价"
-            : yuanPerDollarLabel
-              ? yuanPerDollarLabel
-            : standardModel !== "all"
-              ? standardModel
-              : summary
-                ? formatMultiplierRange(summary)
-                : bestFamilyLabel(comparison)}
+        {priceFreshness.state === "delayed" ? (
+          `价格待更新${priceFreshness.lastVerifiedAt ? ` · ${formatDateShortMinute(priceFreshness.lastVerifiedAt)}` : ""}`
+        ) : (
+          <>
+            <div>{secondaryLabel}</div>
+            {yuanPerDollarLabel ? <div className="mt-0.5">{yuanPerDollarLabel}</div> : null}
+          </>
+        )}
       </div>
     </div>
   );

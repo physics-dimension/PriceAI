@@ -459,7 +459,7 @@ function RechargeRatioDisplay({ station }: { station: TransitStation }) {
     >
       <span className="font-extrabold text-[#2d3435]">{formatRate(coefficient)}</span>
       <span className="text-[#9aa2a3]">·</span>
-      <span className="text-[10px] font-bold text-[#47657a]">{ratioText}</span>
+      <span className="text-[10px] font-bold text-[#47657a]">{formatRechargeRatioSymbol(ratioText)}</span>
     </span>
   );
 }
@@ -468,6 +468,14 @@ function getDisplayRechargeRatio(text: string | null): string | null {
   if (!text) return null;
   const match = text.match(/\d+(?:\.\d+)?\s*:\s*\d+(?:\.\d+)?/);
   return match?.[0]?.replace(/\s+/g, "") ?? null;
+}
+
+function formatRechargeRatioSymbol(displayRatio: string): string {
+  const quota = parseRechargeRatio(displayRatio);
+  if (quota === null || !Number.isFinite(quota)) return displayRatio;
+  const decimals = quota >= 100 ? 0 : quota >= 10 ? 1 : 2;
+  const quotaText = quota.toFixed(decimals).replace(/\.?0+$/, "");
+  return `¥1 = ${quotaText}刀`;
 }
 
 function rechargeRatioTitle(originalText: string | null, displayRatio: string): string {

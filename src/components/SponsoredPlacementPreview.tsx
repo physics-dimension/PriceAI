@@ -187,6 +187,10 @@ export function SponsoredPlacementPreview({ kind, settings = null, className = "
     return <FooterSponsorSection copy={copy} creatives={creatives} kind={kind} className={className} onDismiss={dismiss} pathname={pathname} />;
   }
 
+  if (kind === "apiTransit" || kind === "apiTransitModels") {
+    return <TransitSponsorSection copy={copy} creatives={creatives} kind={kind} className={className} onDismiss={dismiss} pathname={pathname} />;
+  }
+
   return <DisplayAdCard copy={copy} creative={creatives[0]} kind={kind} className={className} onDismiss={dismiss} pathname={pathname} />;
 }
 
@@ -322,6 +326,60 @@ function DisplayAdCard({
         path={pathname}
         compact
       />
+    </section>
+  );
+}
+
+function TransitSponsorSection({
+  copy,
+  creatives,
+  kind,
+  className,
+  onDismiss,
+  pathname,
+}: {
+  copy: PlacementCopy;
+  creatives: SponsorCreative[];
+  kind: SponsorPlacementKind;
+  className: string;
+  onDismiss: () => void;
+  pathname: string;
+}) {
+  return (
+    <section
+      aria-label={`${copy.eyebrow}广告位`}
+      className={`relative rounded-lg bg-white p-4 text-[#202829] ring-1 ring-[#dfe4e5] ${className}`}
+    >
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="absolute right-4 top-4 inline-flex h-7 w-7 items-center justify-center rounded-full bg-[#f2f4f4] text-[#5a6061] transition hover:bg-[#e4e9ea] hover:text-[#202829]"
+        aria-label="关闭中转 API 赞助展示区广告"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+
+      <div className="pr-8">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h2 className="text-base font-extrabold text-[#202829]">赞助商</h2>
+          <Link href="/commercial#slots" className="text-xs font-bold text-[#2f6fff] transition hover:text-[#1c52c7]">
+            成为赞助商
+          </Link>
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+          {creatives.map((card) => (
+            <SponsorCard
+              key={card.id}
+              card={card}
+              copy={copy}
+              kind={kind}
+              placementId={copy.id}
+              path={pathname}
+            />
+          ))}
+        </div>
+      </div>
     </section>
   );
 }

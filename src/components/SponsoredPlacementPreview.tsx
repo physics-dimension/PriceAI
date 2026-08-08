@@ -367,7 +367,7 @@ function TransitSponsorSection({
           </Link>
         </div>
 
-        <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-4 flex flex-wrap items-start gap-3">
           {creatives.map((card) => (
             <SponsorCard
               key={card.id}
@@ -376,6 +376,7 @@ function TransitSponsorSection({
               kind={kind}
               placementId={copy.id}
               path={pathname}
+              compact
             />
           ))}
         </div>

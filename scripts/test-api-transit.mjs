@@ -922,6 +922,25 @@ const preservedManualStationSummary = __test.mergeStationForRefresh(
 );
 assert.equal(preservedManualStationSummary.summary, "站长已补充人工说明，保留该说明。");
 
+const preservedManualStationName = __test.mergeStationForRefresh(
+  {
+    id: "manual-name",
+    name: "A6-API",
+    auto_publish: true,
+    published: true,
+    collection_status: "success",
+    created_at: "new",
+  },
+  {
+    id: "manual-name",
+    name: "AA",
+    published: true,
+    created_at: "old",
+  },
+  {},
+);
+assert.equal(preservedManualStationName.name, "AA");
+
 const preservedManualStationLabels = __test.mergeStationForRefresh(
   {
     id: "manual-labels",

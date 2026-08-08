@@ -4678,6 +4678,7 @@ function mergeStationForRefresh(station, existing, options) {
 
   return normalizeUnknownAvailability(mergeExistingAvailability({
     ...row,
+    name: existing.name || station.name,
     status: manuallyRemoved ? existing.status || "unknown" : refreshFailed ? existing.status || station.status : row.status,
     source_type: existing.source_type || station.source_type,
     commercial_relation: existing.commercial_relation || station.commercial_relation,

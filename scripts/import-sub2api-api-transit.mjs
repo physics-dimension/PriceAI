@@ -1527,6 +1527,7 @@ function mergeStationForRefresh(station, existing, options) {
 
   return normalizeUnknownAvailability({
     ...station,
+    name: existing.name || station.name,
     source_type: existing.source_type || station.source_type,
     commercial_relation: existing.commercial_relation || station.commercial_relation,
     summary: existing.summary || station.summary,

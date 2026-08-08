@@ -32,6 +32,8 @@ const APINODE_PUBLIC_SITE_INFO_COLLECTORS = new Set(["apinode_public_site_info",
 const ZIVV_MODEL_HUB_COLLECTORS = new Set(["zivv_model_hub"]);
 const AI_TRANSIT_SNAPSHOT_COLLECTORS = new Set(["ai_transit_snapshot"]);
 const MAX_PUBLIC_AVAILABILITY_SAMPLE_COUNT = 60;
+const SUPABASE_READ_PAGE_SIZE = 1000;
+const API_TRANSIT_OFFER_WRITE_MAX_ROWS_PER_STATION = 300;
 const AVAILABILITY_SNAPSHOT_DELETE_BATCH_SIZE = 500;
 const AVAILABILITY_SNAPSHOT_DELETE_MAX_BATCHES = 20;
 const SOURCE_SKIPPED = Symbol("source_skipped");
@@ -4098,20 +4100,47 @@ async function postRows(rows, options) {
     .map(normalizeApiTransitOfferForWrite);
   const staleOfferIds = findStaleRefreshedOfferIds(existingOffers, refreshedOfferKeys);
 
-  await upsertRows(supabase, "api_transit_stations", stations, { onConflict: "id" });
-  await enforceRemovedStationStateAfterUpsert(supabase, stations.map((station) => station.id));
-  const offerWriteResult = await upsertOfferRows(supabase, offers);
-  await deactivateOffersById(supabase, staleOfferIds);
-  await upsertRows(supabase, "api_transit_detection_runs", rows.runs, { onConflict: "id" });
-  await upsertRows(supabase, "api_transit_availability_samples", rows.availabilitySamples || [], { onConflict: "id" });
-  await deleteSupersededAvailabilitySampleSnapshots(supabase, rows.availabilitySampleSnapshots || []);
+  const newStationShells = stations
+    .filter((station) => !existingStations.has(station.id))
+    .map(buildNewStationShellForOfferWrite);
+  await upsertRows(supabase, "api_transit_stations", newStationShells, { onConflict: "id" });
+  const offerWriteResult = await upsertOfferRowsByStation(
+    supabase,
+    offers,
+    rows.stations.map((station) => station.id),
+  );
+  if (offerWriteResult.successfulStationIds.size === 0 && offerWriteResult.failures.length) {
+    const error = new Error(`API 中转报价写入全部失败：${offerWriteResult.failures.map(formatOfferWriteFailure).join("；")}`);
+    error.failures = offerWriteResult.failures;
+    throw error;
+  }
+
+  const successfulStationIds = offerWriteResult.successfulStationIds;
+  const successfulStations = stations.filter((station) => successfulStationIds.has(station.id));
+  const staleOfferStationIds = new Map([...existingOffers.values()].map((offer) => [offer.id, offer.station_id]));
+  const successfulStaleOfferIds = staleOfferIds.filter((id) => successfulStationIds.has(staleOfferStationIds.get(id)));
+  const successfulRuns = (rows.runs || []).filter((run) => successfulStationIds.has(run.station_id));
+  const successfulSamples = (rows.availabilitySamples || []).filter((sample) => successfulStationIds.has(sample.station_id));
+  const successfulSnapshots = (rows.availabilitySampleSnapshots || []).filter((snapshot) =>
+    successfulStationIds.has(snapshot.stationId),
+  );
+
+  await upsertRows(supabase, "api_transit_stations", successfulStations, { onConflict: "id" });
+  await enforceRemovedStationStateAfterUpsert(supabase, successfulStations.map((station) => station.id));
+  await deactivateOffersById(supabase, successfulStaleOfferIds);
+  await upsertRows(supabase, "api_transit_detection_runs", successfulRuns, { onConflict: "id" });
+  await upsertRows(supabase, "api_transit_availability_samples", successfulSamples, { onConflict: "id" });
+  await deleteSupersededAvailabilitySampleSnapshots(supabase, successfulSnapshots);
 
   return {
     ...plan,
     compatibility: offerWriteResult.compatibility,
-    deactivatedOffers: staleOfferIds.length,
+    successfulStations: successfulStationIds.size,
+    failedStations: offerWriteResult.failures.length,
+    writeFailures: offerWriteResult.failures,
+    deactivatedOffers: successfulStaleOfferIds.length,
     skipped: false,
-    message: postRowsMessage(options, refreshedOfferKeys, autoPublishStationIds),
+    message: postRowsMessage(options, refreshedOfferKeys, autoPublishStationIds, offerWriteResult.failures),
   };
 }
 
@@ -4291,6 +4320,74 @@ async function upsertOfferRows(supabase, offers) {
   throw lastMissingColumnError;
 }
 
+async function upsertOfferRowsByStation(supabase, offers, stationIds = []) {
+  const offersByStation = new Map();
+  for (const offer of offers) {
+    if (!offersByStation.has(offer.station_id)) offersByStation.set(offer.station_id, []);
+    offersByStation.get(offer.station_id).push(offer);
+  }
+
+  const successfulStationIds = new Set();
+  const failures = [];
+  const compatibilityMessages = new Set();
+  const allStationIds = uniqueText([...stationIds, ...offersByStation.keys()]).filter(Boolean);
+
+  for (const stationId of allStationIds) {
+    const stationOffers = offersByStation.get(stationId) || [];
+    if (!stationOffers.length) continue;
+    if (stationOffers.length > API_TRANSIT_OFFER_WRITE_MAX_ROWS_PER_STATION) {
+      failures.push({
+        stationId,
+        code: "offer_batch_too_large",
+        message: `单站报价 ${stationOffers.length} 条，超过单事务上限 ${API_TRANSIT_OFFER_WRITE_MAX_ROWS_PER_STATION} 条。`,
+      });
+      continue;
+    }
+
+    try {
+      const result = await upsertOfferRows(supabase, stationOffers);
+      successfulStationIds.add(stationId);
+      if (result.compatibility) compatibilityMessages.add(result.compatibility);
+    } catch (error) {
+      failures.push({
+        stationId,
+        code: stringOrNull(error?.code),
+        message: errorMessage(error),
+      });
+    }
+  }
+
+  return {
+    successfulStationIds,
+    failures,
+    compatibility: [...compatibilityMessages].join(" ") || null,
+  };
+}
+
+function formatOfferWriteFailure(failure) {
+  return [failure.stationId, failure.code, failure.message].filter(Boolean).join(" / ");
+}
+
+function buildNewStationShellForOfferWrite(station) {
+  return {
+    ...station,
+    status: "unknown",
+    usage_advice: "pending",
+    data_status: "pending_review",
+    availability_seven_day_rate: null,
+    availability_seven_day_samples: 0,
+    availability_first_checked_at: null,
+    availability_last_checked_at: null,
+    availability_latest_latency_ms: null,
+    availability_avg_latency_7d_ms: null,
+    availability_note: null,
+    collection_status: "pending",
+    collection_error: null,
+    last_collected_at: null,
+    published: false,
+  };
+}
+
 function withFixedPriceOfferWriteFallbacks(attempts) {
   const output = [];
   const seen = new Set();
@@ -4345,159 +4442,136 @@ function normalizeApiTransitOfferForWrite(offer) {
   };
 }
 
-function postRowsMessage(options, refreshedOfferKeys, autoPublishStationIds) {
-  if (options.publish) return "API 中转公开价格已写入并发布。";
-  if (autoPublishStationIds.size) return "API 中转公开价格已写入；自动发布来源已按最新快照同步。";
-  if (refreshedOfferKeys.size) return "API 中转公开价格已写入；已发布来源已按最新快照同步。";
-  return "API 中转公开价格已写入待审核队列。";
+function postRowsMessage(options, refreshedOfferKeys, autoPublishStationIds, failures = []) {
+  const suffix = failures.length
+    ? ` ${failures.length} 个来源写入失败并已隔离：${failures.map((failure) => failure.stationId).join("、")}。`
+    : "";
+  if (options.publish) return `API 中转公开价格已写入并发布。${suffix}`.trim();
+  if (autoPublishStationIds.size) return `API 中转公开价格已写入；自动发布来源已按最新快照同步。${suffix}`.trim();
+  if (refreshedOfferKeys.size) return `API 中转公开价格已写入；已发布来源已按最新快照同步。${suffix}`.trim();
+  return `API 中转公开价格已写入待审核队列。${suffix}`.trim();
 }
 
 async function readExistingOffers(supabase, offers) {
   const stationIds = uniqueText(offers.map((offer) => offer.station_id)).filter(Boolean);
-  const byId = new Map();
-  for (const chunk of chunks(stationIds, 100)) {
-    if (!chunk.length) continue;
-    const { data, error } = await supabase
-      .from("api_transit_offers")
-      .select(
-        [
-          "id",
-          "station_id",
-          "standard_model",
-          "group_name",
-          "status",
-          "created_at",
-          "availability_source_type",
-          "cache_hit_rate",
-          "cache_hit_sample_tokens",
-          "availability_seven_day_rate",
-          "availability_seven_day_samples",
-          "availability_first_checked_at",
-          "availability_last_checked_at",
-          "availability_latest_latency_ms",
-          "availability_avg_latency_7d_ms",
-          "availability_note",
-          "availability_source_label",
-          "availability_source_url",
-        ].join(","),
-      )
-      .in("station_id", chunk);
-    if (error) {
-      if (
-        isMissingColumnError(error, "cache_hit_rate") ||
-        isMissingColumnError(error, "cache_hit_sample_tokens")
-      ) {
-        return readExistingOffersWithoutCacheHit(supabase, offers);
-      }
-      if (isMissingColumnError(error, "availability_first_checked_at")) {
-        return readExistingOffersWithoutFirstCheckedAt(supabase, offers);
-      }
-      if (
-        isMissingColumnError(error, "availability_latest_latency_ms") ||
-        isMissingColumnError(error, "availability_avg_latency_7d_ms")
-      ) {
-        return readExistingOffersWithoutLatency(supabase, offers);
-      }
-      throw error;
+  try {
+    return await readExistingOffersWithColumns(supabase, stationIds, [
+      "id",
+      "station_id",
+      "standard_model",
+      "group_name",
+      "status",
+      "created_at",
+      "availability_source_type",
+      "cache_hit_rate",
+      "cache_hit_sample_tokens",
+      "availability_seven_day_rate",
+      "availability_seven_day_samples",
+      "availability_first_checked_at",
+      "availability_last_checked_at",
+      "availability_latest_latency_ms",
+      "availability_avg_latency_7d_ms",
+      "availability_note",
+      "availability_source_label",
+      "availability_source_url",
+    ]);
+  } catch (error) {
+    if (isMissingColumnError(error, "cache_hit_rate") || isMissingColumnError(error, "cache_hit_sample_tokens")) {
+      return readExistingOffersWithoutCacheHit(supabase, offers);
     }
-    for (const row of data || []) byId.set(offerKey(row), row);
+    if (isMissingColumnError(error, "availability_first_checked_at")) {
+      return readExistingOffersWithoutFirstCheckedAt(supabase, offers);
+    }
+    if (isMissingColumnError(error, "availability_latest_latency_ms") || isMissingColumnError(error, "availability_avg_latency_7d_ms")) {
+      return readExistingOffersWithoutLatency(supabase, offers);
+    }
+    throw error;
   }
-  return byId;
 }
 
 async function readExistingOffersWithoutCacheHit(supabase, offers) {
   const stationIds = uniqueText(offers.map((offer) => offer.station_id)).filter(Boolean);
-  const byId = new Map();
-  for (const chunk of chunks(stationIds, 100)) {
-    if (!chunk.length) continue;
-    const { data, error } = await supabase
-      .from("api_transit_offers")
-      .select(
-        [
-          "id",
-          "station_id",
-          "standard_model",
-          "group_name",
-          "status",
-          "created_at",
-          "availability_source_type",
-          "availability_seven_day_rate",
-          "availability_seven_day_samples",
-          "availability_first_checked_at",
-          "availability_last_checked_at",
-          "availability_latest_latency_ms",
-          "availability_avg_latency_7d_ms",
-          "availability_note",
-          "availability_source_label",
-          "availability_source_url",
-        ].join(","),
-      )
-      .in("station_id", chunk);
-    if (error) {
-      if (isMissingColumnError(error, "availability_first_checked_at")) {
-        return readExistingOffersWithoutFirstCheckedAt(supabase, offers);
-      }
-      if (
-        isMissingColumnError(error, "availability_latest_latency_ms") ||
-        isMissingColumnError(error, "availability_avg_latency_7d_ms")
-      ) {
-        return readExistingOffersWithoutLatency(supabase, offers);
-      }
-      throw error;
+  try {
+    return await readExistingOffersWithColumns(supabase, stationIds, [
+      "id",
+      "station_id",
+      "standard_model",
+      "group_name",
+      "status",
+      "created_at",
+      "availability_source_type",
+      "availability_seven_day_rate",
+      "availability_seven_day_samples",
+      "availability_first_checked_at",
+      "availability_last_checked_at",
+      "availability_latest_latency_ms",
+      "availability_avg_latency_7d_ms",
+      "availability_note",
+      "availability_source_label",
+      "availability_source_url",
+    ]);
+  } catch (error) {
+    if (isMissingColumnError(error, "availability_first_checked_at")) {
+      return readExistingOffersWithoutFirstCheckedAt(supabase, offers);
     }
-    for (const row of data || []) byId.set(offerKey(row), row);
+    if (isMissingColumnError(error, "availability_latest_latency_ms") || isMissingColumnError(error, "availability_avg_latency_7d_ms")) {
+      return readExistingOffersWithoutLatency(supabase, offers);
+    }
+    throw error;
   }
-  return byId;
 }
 
 async function readExistingOffersWithoutLatency(supabase, offers) {
   const stationIds = uniqueText(offers.map((offer) => offer.station_id)).filter(Boolean);
-  const byId = new Map();
-  for (const chunk of chunks(stationIds, 100)) {
-    if (!chunk.length) continue;
-    const { data, error } = await supabase
-      .from("api_transit_offers")
-      .select(
-        [
-          "id",
-          "station_id",
-          "standard_model",
-          "group_name",
-          "status",
-          "created_at",
-          "availability_source_type",
-          "availability_seven_day_rate",
-          "availability_seven_day_samples",
-          "availability_first_checked_at",
-          "availability_last_checked_at",
-          "availability_note",
-          "availability_source_label",
-          "availability_source_url",
-        ].join(","),
-      )
-      .in("station_id", chunk);
-    if (error) {
-      if (isMissingColumnError(error, "availability_first_checked_at")) {
-        return readExistingOffersWithoutFirstCheckedAt(supabase, offers);
-      }
-      throw error;
+  try {
+    return await readExistingOffersWithColumns(supabase, stationIds, [
+      "id",
+      "station_id",
+      "standard_model",
+      "group_name",
+      "status",
+      "created_at",
+      "availability_source_type",
+      "availability_seven_day_rate",
+      "availability_seven_day_samples",
+      "availability_first_checked_at",
+      "availability_last_checked_at",
+      "availability_note",
+      "availability_source_label",
+      "availability_source_url",
+    ]);
+  } catch (error) {
+    if (isMissingColumnError(error, "availability_first_checked_at")) {
+      return readExistingOffersWithoutFirstCheckedAt(supabase, offers);
     }
-    for (const row of data || []) byId.set(offerKey(row), row);
+    throw error;
   }
-  return byId;
 }
 
 async function readExistingOffersWithoutFirstCheckedAt(supabase, offers) {
   const stationIds = uniqueText(offers.map((offer) => offer.station_id)).filter(Boolean);
+  return readExistingOffersWithColumns(
+    supabase,
+    stationIds,
+    ["id", "station_id", "standard_model", "group_name", "status", "created_at"],
+  );
+}
+
+async function readExistingOffersWithColumns(supabase, stationIds, columns) {
   const byId = new Map();
   for (const chunk of chunks(stationIds, 100)) {
     if (!chunk.length) continue;
-    const { data, error } = await supabase
-      .from("api_transit_offers")
-      .select("id,station_id,standard_model,group_name,status,created_at")
-      .in("station_id", chunk);
-    if (error) throw error;
-    for (const row of data || []) byId.set(offerKey(row), row);
+    for (let offset = 0; ; offset += SUPABASE_READ_PAGE_SIZE) {
+      const { data, error } = await supabase
+        .from("api_transit_offers")
+        .select(columns.join(","))
+        .in("station_id", chunk)
+        .order("id", { ascending: true })
+        .range(offset, offset + SUPABASE_READ_PAGE_SIZE - 1);
+      if (error) throw error;
+      for (const row of data || []) byId.set(offerKey(row), row);
+      if ((data || []).length < SUPABASE_READ_PAGE_SIZE) break;
+    }
   }
   return byId;
 }
@@ -5230,17 +5304,21 @@ function stableId(...parts) {
 }
 
 function printSummary(result) {
-  console.log(
-    [
-      "API transit collect plan.",
-      `sources=${result.counts.sources}`,
-      `stations=${result.counts.stations}`,
-      `offers=${result.counts.offers}`,
-      `runs=${result.counts.runs}`,
-      result.database ? `database=${result.database.skipped ? "dry-run" : "posted"}` : "database=not-requested",
-      result.publish ? "publish=true" : "publish=false",
-    ].join(" "),
-  );
+  const summary = [
+    "API transit collect plan.",
+    `sources=${result.counts.sources}`,
+    `stations=${result.counts.stations}`,
+    `offers=${result.counts.offers}`,
+    `runs=${result.counts.runs}`,
+    result.database ? `database=${result.database.skipped ? "dry-run" : "posted"}` : "database=not-requested",
+    result.database?.successfulStations !== undefined ? `write_success=${result.database.successfulStations}` : null,
+    result.database?.failedStations ? `write_failed=${result.database.failedStations}` : null,
+    result.publish ? "publish=true" : "publish=false",
+  ].filter(Boolean);
+  console.log(summary.join(" "));
+  for (const failure of result.database?.writeFailures || []) {
+    console.error(`API transit station write isolated: ${formatOfferWriteFailure(failure)}`);
+  }
 }
 
 function isCli() {
@@ -5271,6 +5349,8 @@ export const __test = {
   applyNewApiTransitSnapshotAvailability,
   applyZivvStatusAvailability,
   mergeOfferForRefresh,
+  buildNewStationShellForOfferWrite,
+  readExistingOffersWithColumns,
   removeAvailabilityEvidenceFields,
   parseApinodePublicSiteInfoPayload,
   parseOneHopPublicModelsPayload,
@@ -5283,4 +5363,5 @@ export const __test = {
   standardizeModelName,
   shouldRestrictToPublishedStations,
   upsertRows,
+  upsertOfferRowsByStation,
 };

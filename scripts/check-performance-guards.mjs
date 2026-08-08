@@ -480,6 +480,18 @@ assert(!/drop\s+index[\s\S]{0,160}api_transit_availability_samples_checked_time_
 assert(!/\nselect\s+public\.prune_api_transit_(?:detection_run_)?retention\s*\(/i.test(transitDetectionRetentionMigration), "Detection retention migration must not execute destructive pruning while it is applied.");
 assert(!/vacuum\s+full|reindex/i.test(transitDetectionRetentionMigration), "Detection retention migration must not run table-rewriting maintenance during rollout.");
 
+const transitOfferRetentionMigration = read("supabase/migrations/20260808135000_api_transit_inactive_offer_retention.sql");
+const transitMultiplierHistoryMigration = read("supabase/migrations/20260627103000_api_transit_multiplier_history.sql");
+assert(/prune_api_transit_offer_retention/.test(transitOfferRetentionMigration), "API transit retention must prune obsolete inactive offer entities.");
+assert(/p_inactive_retention_days integer default 7/.test(transitOfferRetentionMigration), "Inactive API transit offers must default to seven-day retention.");
+assert(/greatest\(7, least\(coalesce\(p_inactive_retention_days, 7\), 90\)\)/.test(transitOfferRetentionMigration), "Inactive API transit offer retention must enforce seven days as a hard minimum.");
+assert(/where status = 'inactive'[\s\S]{0,120}updated_at < v_cutoff/.test(transitOfferRetentionMigration), "Offer retention must only target inactive rows beyond the retention cutoff.");
+assert(/'offers', public\.prune_api_transit_offer_retention\(7, p_batch_size, p_dry_run\)/.test(transitOfferRetentionMigration), "Unified API transit retention must include inactive offers.");
+assert(/p_dry_run boolean default true/.test(transitOfferRetentionMigration), "Inactive offer retention must default to preview-only mode.");
+assert(!/\nselect\s+public\.prune_api_transit_(?:offer_)?retention\s*\(/i.test(transitOfferRetentionMigration), "Inactive offer retention migration must not execute destructive pruning while applied.");
+assert(!/vacuum\s+full|reindex/i.test(transitOfferRetentionMigration), "Inactive offer retention migration must not run table-rewriting maintenance during rollout.");
+assert(/offer_id text references api_transit_offers\(id\) on delete set null/.test(transitMultiplierHistoryMigration), "Deleting obsolete inactive offers must preserve independent multiplier history.");
+
 const smokeText = read("scripts/smoke-cloudflare.mjs");
 assert(/SMOKE_FETCH_TIMEOUT_MS/.test(smokeText), "scripts/smoke-cloudflare.mjs: smoke checks must have a request timeout.");
 assert(/fetchWithTimeout/.test(smokeText), "scripts/smoke-cloudflare.mjs: smoke checks must use fetchWithTimeout.");

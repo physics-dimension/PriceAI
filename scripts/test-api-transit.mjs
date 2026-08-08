@@ -79,6 +79,124 @@ assert.deepEqual(stationUpsertAttempts[1], [{
   name: "Station schema compatibility",
 }]);
 
+const paginatedExistingOffers = Array.from({ length: 1001 }, (_, index) => ({
+  id: `existing-offer-${index}`,
+  station_id: "large-station",
+  standard_model: `Model ${index}`,
+  group_name: "default",
+  status: "active",
+  created_at: "2026-08-08T00:00:00.000Z",
+}));
+const existingOfferRanges = [];
+const existingOffersByKey = await __test.readExistingOffersWithColumns(
+  {
+    from(table) {
+      assert.equal(table, "api_transit_offers");
+      return {
+        select() {
+          return {
+            in(column, stationIds) {
+              assert.equal(column, "station_id");
+              assert.deepEqual(stationIds, ["large-station"]);
+              return {
+                order(columnName, options) {
+                  assert.equal(columnName, "id");
+                  assert.deepEqual(options, { ascending: true });
+                  return {
+                    async range(from, to) {
+                      existingOfferRanges.push([from, to]);
+                      return { data: paginatedExistingOffers.slice(from, to + 1), error: null };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  },
+  ["large-station"],
+  ["id", "station_id", "standard_model", "group_name", "status", "created_at"],
+);
+assert.equal(existingOffersByKey.size, 1001, "Existing offer reads must not stop at PostgREST's first 1000 rows.");
+assert.deepEqual(existingOfferRanges, [[0, 999], [1000, 1999]]);
+assert.equal(
+  existingOffersByKey.get("large-station|Model 1000|default")?.id,
+  "existing-offer-1000",
+  "Offers beyond the first page must retain their stored primary key during refresh.",
+);
+
+const isolatedOfferWrites = [];
+const isolatedWriteResult = await __test.upsertOfferRowsByStation(
+  {
+    from(table) {
+      assert.equal(table, "api_transit_offers");
+      return {
+        async upsert(rows) {
+          isolatedOfferWrites.push(rows.map((row) => row.station_id));
+          return rows[0]?.station_id === "broken-station"
+            ? { error: { code: "23503", message: "history foreign key conflict" } }
+            : { error: null };
+        },
+      };
+    },
+  },
+  [
+    { id: "broken-offer", station_id: "broken-station" },
+    { id: "healthy-offer", station_id: "healthy-station" },
+  ],
+  ["broken-station", "healthy-station", "empty-station"],
+);
+assert.deepEqual(isolatedOfferWrites, [["broken-station"], ["healthy-station"]]);
+assert.deepEqual([...isolatedWriteResult.successfulStationIds], ["healthy-station"]);
+assert.equal(isolatedWriteResult.failures.length, 1);
+assert.equal(isolatedWriteResult.failures[0].stationId, "broken-station");
+assert.equal(isolatedWriteResult.failures[0].code, "23503");
+
+let oversizedOfferWriteCalls = 0;
+const oversizedOfferWriteResult = await __test.upsertOfferRowsByStation(
+  {
+    from() {
+      oversizedOfferWriteCalls += 1;
+      return { async upsert() { return { error: null }; } };
+    },
+  },
+  Array.from({ length: 301 }, (_, index) => ({ id: `oversized-${index}`, station_id: "oversized-station" })),
+  ["oversized-station"],
+);
+assert.equal(oversizedOfferWriteCalls, 0, "Oversized station writes must fail before any partial database request.");
+assert.equal(oversizedOfferWriteResult.successfulStationIds.size, 0);
+assert.equal(oversizedOfferWriteResult.failures[0].code, "offer_batch_too_large");
+
+const newStationShell = __test.buildNewStationShellForOfferWrite({
+  id: "new-station",
+  status: "active",
+  usage_advice: "try_small",
+  data_status: "verified",
+  availability_seven_day_rate: 1,
+  availability_seven_day_samples: 60,
+  availability_first_checked_at: "2026-08-01T00:00:00.000Z",
+  availability_last_checked_at: "2026-08-08T00:00:00.000Z",
+  availability_latest_latency_ms: 1000,
+  availability_avg_latency_7d_ms: 1200,
+  availability_note: "fresh",
+  collection_status: "success",
+  last_collected_at: "2026-08-08T00:00:00.000Z",
+  published: true,
+});
+assert.equal(newStationShell.published, false);
+assert.equal(newStationShell.collection_status, "pending");
+assert.equal(newStationShell.last_collected_at, null);
+assert.equal(newStationShell.availability_last_checked_at, null);
+
+const collectorWriteOrderSource = readFileSync(new URL("./collect-api-transit.mjs", import.meta.url), "utf8");
+assert.match(
+  collectorWriteOrderSource,
+  /const offerWriteResult = await upsertOfferRowsByStation[\s\S]{0,2200}await upsertRows\(supabase, "api_transit_stations", successfulStations/,
+  "Existing station freshness must only advance after that station's offer write succeeds.",
+);
+
 const leaseCliSmoke = spawnSync(process.execPath, [fileURLToPath(new URL("./collect-api-transit.mjs", import.meta.url)), "--post", "--source", "__lease_smoke__"], {
   cwd: fileURLToPath(new URL("..", import.meta.url)),
   encoding: "utf8",

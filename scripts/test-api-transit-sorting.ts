@@ -36,6 +36,8 @@ import {
   normalizedTransitCommercialOfferDisclosure,
   getRechargeCoefficientFromRatio,
   formatTransitFixedPriceValue,
+  formatYuanPerDollar,
+  isDollarTransitModelFamily,
   scoreTransitRelativeCost,
   scoreTransitReliability,
   scoreTransitResponseLatency,
@@ -57,6 +59,10 @@ assertEqual(getTransitFocusedFamilyFromReturnQuery("family=unknown"), null);
 assertEqual(getTransitFocusedFamilyFromReturnQuery(["family=image", "family=video"]), "image");
 assertEqual(getTransitFocusedFamilyFromReturnQuery(null), null);
 assertEqual(TRANSIT_STANDARD_MODELS.includes("Claude Opus 5"), true);
+assertEqual(formatYuanPerDollar(0.09), "¥0.09 / 刀");
+assertEqual(formatYuanPerDollar(0.009), "¥0.009 / 刀");
+assertEqual(isDollarTransitModelFamily("claude"), true);
+assertEqual(isDollarTransitModelFamily("deepseek"), false);
 const emptyClaudeOpus5Summary = getTransitModelSummaries([], "claude")
   .find((summary) => summary.standardModel === "Claude Opus 5");
 assertEqual(emptyClaudeOpus5Summary?.stationCount, 0);

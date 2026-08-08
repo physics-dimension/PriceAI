@@ -2631,6 +2631,17 @@ export function formatRate(rate: number | null): string {
   return `${rate.toFixed(2)}x`;
 }
 
+export function isDollarTransitModelFamily(family: TransitModelFamily): boolean {
+  return family === "gpt" || family === "claude" || family === "gemini" || family === "grok";
+}
+
+export function formatYuanPerDollar(rate: number | null): string {
+  if (rate === null || !Number.isFinite(rate)) return "—";
+  const decimals = rate < 0.1 ? 3 : 2;
+  const value = rate.toFixed(decimals).replace(/\.?0+$/, "");
+  return `¥${value} / 刀`;
+}
+
 export function formatTransitModelMultiplier(price: TransitModelPrice): string {
   if (isTransitFixedPrice(price)) return "不适用";
   const value = price.modelMultiplier;

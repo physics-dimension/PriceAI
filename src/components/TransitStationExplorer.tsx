@@ -79,9 +79,11 @@ import {
   getTransitStationDetectionSummary,
   hasPublicTransitModelDetectionReport,
   hasTransitAffRelation,
+  isDollarTransitModelFamily,
   getTransitReviewTags,
   getTransitStationSystemLabel,
   formatTransitFixedPriceRange,
+  formatYuanPerDollar,
   hasTransitFixedPriceSummary,
   parseRechargeRatio,
   type TransitSortKey,
@@ -502,6 +504,13 @@ function CombinedRateCell({
   const fixedPrice = summary && hasTransitFixedPriceSummary(summary)
     ? formatTransitFixedPriceRange(summary)
     : null;
+  const showYuanPerDollar = summary !== null &&
+    !fixedPrice &&
+    isDollarTransitModelFamily(summary.family) &&
+    summary.family !== "image" &&
+    summary.family !== "video" &&
+    (standardModel === "all" || TRANSIT_STANDARD_MODEL_MODALITY[standardModel] === "text");
+  const yuanPerDollarLabel = showYuanPerDollar ? formatYuanPerDollar(rate) : null;
   const priceFreshness = getTransitStationPriceFreshness(station, {
     activeFamily: family,
     activeStandardModel: standardModel,
@@ -546,6 +555,8 @@ function CombinedRateCell({
           ? `价格待更新${priceFreshness.lastVerifiedAt ? ` · ${formatDateShortMinute(priceFreshness.lastVerifiedAt)}` : ""}`
           : fixedPrice
             ? "人民币固定价"
+            : yuanPerDollarLabel
+              ? yuanPerDollarLabel
             : standardModel !== "all"
               ? standardModel
               : summary

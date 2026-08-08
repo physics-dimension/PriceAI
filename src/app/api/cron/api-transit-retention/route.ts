@@ -15,6 +15,7 @@ export async function POST(request: Request) {
   if (authError) return authError;
 
   const url = new URL(request.url);
+  const scope = url.searchParams.get("scope") === "offers" ? "offers" : "all";
   const dryRun = url.searchParams.get("apply") !== "1";
   const batchSize = boundedInteger(url.searchParams.get("batch"), 5000, 100, 20000);
   const startedAt = new Date().toISOString();
@@ -22,15 +23,22 @@ export async function POST(request: Request) {
   try {
     const supabase = getSupabaseServerClient();
     if (!supabase) throw new Error("Supabase 尚未配置。");
-    const { data, error } = await supabase.rpc("prune_api_transit_retention", {
-      p_batch_size: batchSize,
-      p_dry_run: dryRun,
-    });
+    const { data, error } = scope === "offers"
+      ? await supabase.rpc("prune_api_transit_offer_retention", {
+          p_inactive_retention_days: 7,
+          p_batch_size: batchSize,
+          p_dry_run: dryRun,
+        })
+      : await supabase.rpc("prune_api_transit_retention", {
+          p_batch_size: batchSize,
+          p_dry_run: dryRun,
+        });
     if (error) throw error;
     return Response.json({
       ok: true,
       startedAt,
       finishedAt: new Date().toISOString(),
+      scope,
       dryRun,
       batchSize,
       result: data,
@@ -41,6 +49,7 @@ export async function POST(request: Request) {
       ok: false,
       startedAt,
       finishedAt: new Date().toISOString(),
+      scope,
       dryRun,
       batchSize,
       message: safeApiErrorMessage(error, "API 中转留存维护失败。"),
